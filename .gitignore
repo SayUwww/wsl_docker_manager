@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Frontend build output and caches
+dist/
+.vite/
+coverage/
+
+# Tauri / Rust build output
+src-tauri/target/
+src-tauri/target-check*/
+target/
+
+# Project scratch files
+scratch_check/
+*.stackdump
+*.log
+*.tmp
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor and IDE metadata
+.idea/
+.vscode/
+.claude/
+.agent/
+*.swp
+*.swo
+
+# Local package-manager caches
+.npm/
+.pnpm-store/
+.yarn/
