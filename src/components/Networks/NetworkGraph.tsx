@@ -8,7 +8,7 @@ import {
   MarkerType, useNodesState, useEdgesState, Handle, Position,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Trash2, Network as NetworkIcon, Container, Minimize2, Loader2 } from 'lucide-react';
+import { Trash2, Network as NetworkIcon, Container, Minimize2, Loader2, RefreshCw } from 'lucide-react';
 
 const nodeTypes = {
   network: ({ data }: { data: { label: string } }) => (
@@ -40,6 +40,7 @@ export default function NetworkGraph() {
   const requestConfirmation = useAppStore((s) => s.requestConfirmation);
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkInfo | null>(null);
   const [removingNetworkId, setRemovingNetworkId] = useState<string | null>(null);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
@@ -115,11 +116,44 @@ export default function NetworkGraph() {
     }
   }, [addToast, networks, requestConfirmation, setNetworks, t]);
 
+  const handleManualRefresh = useCallback(async () => {
+    setManualRefreshing(true);
+    try {
+      const updated = await invoke<NetworkInfo[]>('list_networks');
+      setNetworks(updated);
+      if (selectedNetwork) {
+        const nextSelected = updated.find((network) => network.id === selectedNetwork.id) ?? null;
+        setSelectedNetwork(nextSelected);
+        if (nextSelected) buildGraph(nextSelected);
+      }
+      addToast({ type: 'success', title: t('refreshCompleted'), message: t('networks') });
+    } catch (e) {
+      console.error(e);
+      addToast({ type: 'error', title: t('refreshFailed'), message: String(e) });
+    } finally {
+      setManualRefreshing(false);
+    }
+  }, [addToast, buildGraph, selectedNetwork, setNetworks, t]);
+
   return (
     <div className="max-w-7xl mx-auto">
       <header className="mb-6">
-        <h2 className="text-2xl font-bold tracking-tight">{t('networkTopology')}</h2>
-        <p className="text-zinc-400 text-sm mt-1">{networks.length} {t('customNetworks')}</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-2xl font-bold tracking-tight">{t('networkTopology')}</h2>
+            <p className="text-zinc-400 text-sm mt-1">{networks.length} {t('customNetworks')}</p>
+          </div>
+          <button
+            type="button"
+            onClick={handleManualRefresh}
+            disabled={manualRefreshing}
+            className="btn-secondary text-xs"
+            title={t('refresh')}
+          >
+            <RefreshCw size={14} className={`mr-1 ${manualRefreshing ? 'animate-spin' : ''}`} />
+            {manualRefreshing ? t('refreshing') : t('refresh')}
+          </button>
+        </div>
       </header>
 
       {!selectedNetwork ? (

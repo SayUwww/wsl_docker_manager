@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { ConnectionMode, ConfirmationRequest, DockerInfo, DockerStatus, ExecutionLog, Language, RefreshIntervalMs, ResourceStats, ContainerInfo, ImageInfo, NetworkInfo, VolumeInfo, SidebarTab, ThemeMode, ToastMessage, ToastType } from '../types';
+import { persist } from 'zustand/middleware';
+import { CloseBehavior, ConnectionMode, ConfirmationRequest, DockerInfo, DockerStatus, ExecutionLog, Language, RefreshIntervalMs, ResourceStats, ContainerInfo, ImageInfo, NetworkInfo, VolumeInfo, SidebarTab, ThemeMode, ToastMessage, ToastType } from '../types';
 
 let confirmationResolver: ((confirmed: boolean) => void) | null = null;
 
@@ -45,6 +46,8 @@ interface AppState {
   setRefreshIntervalMs: (interval: RefreshIntervalMs) => void;
   themeMode: ThemeMode;
   setThemeMode: (mode: ThemeMode) => void;
+  closeBehavior: CloseBehavior | null;
+  setCloseBehavior: (behavior: CloseBehavior | null) => void;
   executionLogs: ExecutionLog[];
   addExecutionLog: (log: Omit<ExecutionLog, 'id' | 'time'>) => void;
   clearExecutionLogs: () => void;
@@ -66,7 +69,9 @@ interface AppState {
   setTerminalContainer: (id: string | null, name: string | null) => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>()(
+  persist(
+    (set) => ({
   dockerStatus: 'disconnected',
   dockerInfo: null,
   setDockerStatus: (status) => set({ dockerStatus: status }),
@@ -107,6 +112,8 @@ export const useAppStore = create<AppState>((set) => ({
   setRefreshIntervalMs: (interval) => set({ refreshIntervalMs: interval }),
   themeMode: 'dark',
   setThemeMode: (mode) => set({ themeMode: mode }),
+  closeBehavior: null,
+  setCloseBehavior: (behavior) => set({ closeBehavior: behavior }),
   executionLogs: [],
   addExecutionLog: (log) =>
     set((state) => ({
@@ -160,4 +167,16 @@ export const useAppStore = create<AppState>((set) => ({
   terminalContainerId: null,
   terminalContainerName: null,
   setTerminalContainer: (id, name) => set({ terminalContainerId: id, terminalContainerName: name }),
-}));
+}),
+    {
+      name: 'wsl-docker-manager-preferences',
+      partialize: (state) => ({
+        connectionMode: state.connectionMode,
+        language: state.language,
+        refreshIntervalMs: state.refreshIntervalMs,
+        themeMode: state.themeMode,
+        closeBehavior: state.closeBehavior,
+      }),
+    },
+  ),
+);

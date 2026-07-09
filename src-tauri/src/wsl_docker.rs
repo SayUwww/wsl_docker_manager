@@ -1,8 +1,8 @@
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::process::Command;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use std::process::Command;
 
 const DOCKER_COMMAND_TIMEOUT_SECONDS: u64 = 20;
 #[cfg(target_os = "windows")]
@@ -535,8 +535,8 @@ fn docker_output(command: &str) -> Result<String, String> {
         .output()
         .map_err(|e| format!("Failed to execute wsl: {}", e))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = decode_command_output(&output.stdout);
+    let stderr = decode_command_output(&output.stderr);
     if output.status.success() {
         Ok(stdout.trim().to_string())
     } else if output.status.code() == Some(124) {
@@ -556,6 +556,23 @@ fn docker_output(command: &str) -> Result<String, String> {
 
 fn docker_status(command: &str) -> Result<(), String> {
     docker_output(command).map(|_| ())
+}
+
+fn decode_command_output(bytes: &[u8]) -> String {
+    match String::from_utf8(bytes.to_vec()) {
+        Ok(value) => value,
+        Err(_) => {
+            #[cfg(target_os = "windows")]
+            {
+                let (decoded, _, _) = encoding_rs::GBK.decode(bytes);
+                decoded.into_owned()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                String::from_utf8_lossy(bytes).into_owned()
+            }
+        }
+    }
 }
 
 fn sh_quote(value: &str) -> String {

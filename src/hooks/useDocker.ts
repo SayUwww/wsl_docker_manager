@@ -2,6 +2,7 @@ import { useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../store';
 import { ConnectionMode, DockerInfo, ResourceStats, ContainerInfo, ImageInfo, NetworkInfo, VolumeInfo } from '../types';
+import { describeDockerCommand } from '../utils/executionLog';
 
 export function useDocker() {
   const setDockerStatus = useAppStore((s) => s.setDockerStatus);
@@ -22,6 +23,8 @@ export function useDocker() {
       const result = await invoke<T>(command, args);
       addExecutionLog({
         command,
+        displayCommand: describeDockerCommand(command, args),
+        args,
         status: 'ok',
         durationMs: Math.round(performance.now() - started),
       });
@@ -29,6 +32,8 @@ export function useDocker() {
     } catch (error) {
       addExecutionLog({
         command,
+        displayCommand: describeDockerCommand(command, args),
+        args,
         status: 'error',
         durationMs: Math.round(performance.now() - started),
         message: String(error),
@@ -39,7 +44,8 @@ export function useDocker() {
 
   const refreshConnectionMode = useCallback(async () => {
     try {
-      const result = await runInvoke<{ mode: ConnectionMode }>('get_connection_mode');
+      const persistedMode = useAppStore.getState().connectionMode;
+      const result = await runInvoke<{ mode: ConnectionMode }>('set_connection_mode', { mode: persistedMode });
       setConnectionModeStore(result.mode);
     } catch {
       // status polling will surface connection problems

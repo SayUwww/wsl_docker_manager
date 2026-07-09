@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store';
 import { VolumeInfo } from '../../types';
 import { translate } from '../../i18n';
-import { Trash2, HardDrive, AlertTriangle, Database, FolderInput, Loader2 } from 'lucide-react';
+import { Trash2, HardDrive, AlertTriangle, Database, FolderInput, Loader2, RefreshCw } from 'lucide-react';
 
 export default function VolumeList() {
   const volumes = useAppStore((s) => s.volumes);
@@ -15,6 +15,7 @@ export default function VolumeList() {
   const [pruning, setPruning] = useState(false);
   const [removingNames, setRemovingNames] = useState<Set<string>>(new Set());
   const [batchRemoving, setBatchRemoving] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
 
   const orphanVolumes = volumes.filter((v) => v.orphan);
@@ -28,6 +29,20 @@ export default function VolumeList() {
       return next;
     });
   };
+
+  const handleManualRefresh = useCallback(async () => {
+    setManualRefreshing(true);
+    try {
+      const updated = await invoke<VolumeInfo[]>('list_volumes', { containerIds: [] });
+      setVolumes(updated);
+      addToast({ type: 'success', title: t('refreshCompleted'), message: t('volumes') });
+    } catch (e) {
+      console.error(e);
+      addToast({ type: 'error', title: t('refreshFailed'), message: String(e) });
+    } finally {
+      setManualRefreshing(false);
+    }
+  }, [addToast, setVolumes, t]);
 
   const handleRemove = useCallback(async (name: string) => {
     const confirmed = await requestConfirmation({
@@ -117,55 +132,66 @@ export default function VolumeList() {
 
   return (
     <div className="max-w-7xl mx-auto">
-      <header className="mb-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight">{t('volumes')}</h2>
-            <p className="text-zinc-400 text-sm mt-1">
-              {volumes.length} {t('volumes')} &middot; {orphanVolumes.length} {t('orphaned')}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {selectedIds.size > 0 && (
-              <button onClick={handleBatchRemove} disabled={batchRemoving} className="btn-danger text-xs">
-                {batchRemoving ? <Loader2 size={14} className="mr-1 animate-spin" /> : <Trash2 size={14} className="mr-1" />}
-                {t('delete')} ({selectedIds.size})
+      <div className="mb-6">
+        <header className="mb-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-2xl font-bold tracking-tight">{t('volumes')}</h2>
+              <p className="text-zinc-400 text-sm mt-1">
+                {volumes.length} {t('volumes')} &middot; {orphanVolumes.length} {t('orphaned')}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleManualRefresh}
+                disabled={manualRefreshing}
+                className="btn-secondary text-xs"
+                title={t('refresh')}
+              >
+                <RefreshCw size={14} className={`mr-1 ${manualRefreshing ? 'animate-spin' : ''}`} />
+                {manualRefreshing ? t('refreshing') : t('refresh')}
               </button>
-            )}
-            <button
-              onClick={handlePrune}
-              disabled={pruning}
-              className="btn-secondary text-xs"
-            >
-              {pruning ? <Loader2 size={14} className="mr-1 animate-spin" /> : <AlertTriangle size={14} className="mr-1" />}
-              {pruning ? t('pruning') : t('pruneOrphans')}
-            </button>
+              {selectedIds.size > 0 && (
+                <button onClick={handleBatchRemove} disabled={batchRemoving} className="btn-danger text-xs">
+                  {batchRemoving ? <Loader2 size={14} className="mr-1 animate-spin" /> : <Trash2 size={14} className="mr-1" />}
+                  {t('delete')} ({selectedIds.size})
+                </button>
+              )}
+              <button
+                onClick={handlePrune}
+                disabled={pruning}
+                className="btn-secondary text-xs"
+              >
+                {pruning ? <Loader2 size={14} className="mr-1 animate-spin" /> : <AlertTriangle size={14} className="mr-1" />}
+                {pruning ? t('pruning') : t('pruneOrphans')}
+              </button>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        <div className="card p-4">
-          <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
-            <Database size={14} />
-            {t('totalVolumes')}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="card p-4">
+            <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
+              <Database size={14} />
+              {t('totalVolumes')}
+            </div>
+            <div className="text-2xl font-bold">{volumes.length}</div>
           </div>
-          <div className="text-2xl font-bold">{volumes.length}</div>
-        </div>
-        <div className="card p-4">
-          <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
-            <HardDrive size={14} />
-            {t('inUse')}
+          <div className="card p-4">
+            <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
+              <HardDrive size={14} />
+              {t('inUse')}
+            </div>
+            <div className="text-2xl font-bold text-green-400">{usedVolumes.length}</div>
           </div>
-          <div className="text-2xl font-bold text-green-400">{usedVolumes.length}</div>
-        </div>
-        <div className="card p-4">
-          <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
-            <AlertTriangle size={14} />
-            {t('orphaned')}
+          <div className="card p-4">
+            <div className="flex items-center gap-2 text-xs text-zinc-500 mb-1">
+              <AlertTriangle size={14} />
+              {t('orphaned')}
+            </div>
+            <div className="text-2xl font-bold text-amber-400">{orphanVolumes.length}</div>
           </div>
-          <div className="text-2xl font-bold text-amber-400">{orphanVolumes.length}</div>
         </div>
       </div>
 

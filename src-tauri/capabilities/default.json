@@ -3,5 +3,12 @@
   "identifier": "default",
   "description": "Default app permissions",
   "windows": ["main"],
-  "permissions": ["core:default", "shell:allow-open"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-hide",
+    "core:window:allow-is-visible",
+    "core:window:allow-minimize",
+    "shell:allow-open"
+  ]
 }

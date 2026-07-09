@@ -13,6 +13,7 @@ target/
 
 # Project scratch files
 scratch_check/
+.learnings/
 *.stackdump
 *.log
 *.tmp

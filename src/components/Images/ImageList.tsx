@@ -11,6 +11,7 @@ import {
   HardDrive,
   Layers,
   Loader2,
+  RefreshCw,
   Tag,
   Trash2,
 } from 'lucide-react';
@@ -43,6 +44,7 @@ export default function ImageList() {
   const [pruning, setPruning] = useState(false);
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
   const [batchRemoving, setBatchRemoving] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [collapsedImageIds, setCollapsedImageIds] = useState<Set<string>>(new Set());
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
 
@@ -82,6 +84,20 @@ export default function ImageList() {
       return next;
     });
   };
+
+  const handleManualRefresh = useCallback(async () => {
+    setManualRefreshing(true);
+    try {
+      const updated = await invoke<ImageInfo[]>('list_images');
+      setImages(updated);
+      addToast({ type: 'success', title: t('refreshCompleted'), message: t('images') });
+    } catch (e) {
+      console.error(e);
+      addToast({ type: 'error', title: t('refreshFailed'), message: String(e) });
+    } finally {
+      setManualRefreshing(false);
+    }
+  }, [addToast, setImages, t]);
 
   const getDeleteOrder = useCallback((id: string): ImageInfo[] => {
     const visit = (currentId: string, visited: Set<string>): ImageInfo[] => {
@@ -301,59 +317,71 @@ export default function ImageList() {
 
   return (
     <div className="mx-auto max-w-7xl">
-      <header className="mb-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight">{t('images')}</h2>
-            <p className="mt-1 text-sm text-zinc-400">{totalImages} {t('images')} &middot; {formatSize(totalSize)} {t('total')}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            {selectedIds.size > 0 && (
-              <button onClick={handleBatchRemove} disabled={batchRemoving} className="btn-danger text-xs">
-                {batchRemoving ? <Loader2 size={14} className="mr-1 animate-spin" /> : <Trash2 size={14} className="mr-1" />}
-                {t('delete')} ({selectedIds.size})
+      <div className="mb-6">
+        <header className="mb-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-2xl font-bold tracking-tight">{t('images')}</h2>
+              <p className="mt-1 text-sm text-zinc-400">{totalImages} {t('images')} &middot; {formatSize(totalSize)} {t('total')}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleManualRefresh}
+                disabled={manualRefreshing}
+                className="btn-secondary text-xs"
+                title={t('refresh')}
+              >
+                <RefreshCw size={14} className={`mr-1 ${manualRefreshing ? 'animate-spin' : ''}`} />
+                {manualRefreshing ? t('refreshing') : t('refresh')}
               </button>
-            )}
-            <button
-              onClick={handlePrune}
-              disabled={pruning}
-              className="btn-secondary text-xs"
-            >
-              {pruning ? <Loader2 size={14} className="mr-1 animate-spin" /> : <AlertTriangle size={14} className="mr-1" />}
-              {pruning ? t('pruning') : `${t('pruneDangling')} (${danglingCount})`}
-            </button>
+              {selectedIds.size > 0 && (
+                <button onClick={handleBatchRemove} disabled={batchRemoving} className="btn-danger text-xs">
+                  {batchRemoving ? <Loader2 size={14} className="mr-1 animate-spin" /> : <Trash2 size={14} className="mr-1" />}
+                  {t('delete')} ({selectedIds.size})
+                </button>
+              )}
+              <button
+                onClick={handlePrune}
+                disabled={pruning}
+                className="btn-secondary text-xs"
+              >
+                {pruning ? <Loader2 size={14} className="mr-1 animate-spin" /> : <AlertTriangle size={14} className="mr-1" />}
+                {pruning ? t('pruning') : `${t('pruneDangling')} (${danglingCount})`}
+              </button>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-4">
-        <div className="card p-4">
-          <div className="mb-1 flex items-center gap-2 text-xs text-zinc-500">
-            <Layers size={14} />
-            {t('totalImages')}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+          <div className="card p-4">
+            <div className="mb-1 flex items-center gap-2 text-xs text-zinc-500">
+              <Layers size={14} />
+              {t('totalImages')}
+            </div>
+            <div className="text-2xl font-bold">{totalImages}</div>
           </div>
-          <div className="text-2xl font-bold">{totalImages}</div>
-        </div>
-        <div className="card p-4">
-          <div className="mb-1 flex items-center gap-2 text-xs text-zinc-500">
-            <HardDrive size={14} />
-            {t('totalSize')}
+          <div className="card p-4">
+            <div className="mb-1 flex items-center gap-2 text-xs text-zinc-500">
+              <HardDrive size={14} />
+              {t('totalSize')}
+            </div>
+            <div className="text-2xl font-bold">{formatSize(totalSize)}</div>
           </div>
-          <div className="text-2xl font-bold">{formatSize(totalSize)}</div>
-        </div>
-        <div className="card p-4">
-          <div className="mb-1 flex items-center gap-2 text-xs text-zinc-500">
-            <AlertTriangle size={14} />
-            {t('dangling')}
+          <div className="card p-4">
+            <div className="mb-1 flex items-center gap-2 text-xs text-zinc-500">
+              <AlertTriangle size={14} />
+              {t('dangling')}
+            </div>
+            <div className="text-2xl font-bold text-amber-400">{danglingCount}</div>
           </div>
-          <div className="text-2xl font-bold text-amber-400">{danglingCount}</div>
-        </div>
-        <div className="card p-4">
-          <div className="mb-1 flex items-center gap-2 text-xs text-zinc-500">
-            <Tag size={14} />
-            {t('usedByContainers')}
+          <div className="card p-4">
+            <div className="mb-1 flex items-center gap-2 text-xs text-zinc-500">
+              <Tag size={14} />
+              {t('usedByContainers')}
+            </div>
+            <div className="text-2xl font-bold">{images.reduce((s, i) => s + i.containers, 0)}</div>
           </div>
-          <div className="text-2xl font-bold">{images.reduce((s, i) => s + i.containers, 0)}</div>
         </div>
       </div>
 

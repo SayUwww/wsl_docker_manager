@@ -4,9 +4,11 @@ import { open as openPath } from '@tauri-apps/plugin-shell';
 import { useAppStore } from '../../store';
 import { ContainerInfo } from '../../types';
 import { translate } from '../../i18n';
+import { describeDockerCommand } from '../../utils/executionLog';
 import {
   Play, Square, RotateCcw, Trash2, Terminal, ScrollText,
   Search, ExternalLink, FolderOpen, Loader2, Pencil,
+  RefreshCw,
 } from 'lucide-react';
 
 export default function ContainerList() {
@@ -34,6 +36,7 @@ export default function ContainerList() {
   const [openUrlMenu, setOpenUrlMenu] = useState<string | null>(null);
   const [pendingActions, setPendingActions] = useState<Set<string>>(new Set());
   const [pendingBatchAction, setPendingBatchAction] = useState<string | null>(null);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
 
   const filtered = containers.filter((c) => {
     if (searchTerm && !c.name.toLowerCase().includes(searchTerm.toLowerCase()) && !c.image.toLowerCase().includes(searchTerm.toLowerCase())) return false;
@@ -56,10 +59,10 @@ export default function ContainerList() {
     const started = performance.now();
     try {
       const result = await invoke<T>(command, args);
-      addExecutionLog({ command, status: 'ok', durationMs: Math.round(performance.now() - started) });
+      addExecutionLog({ command, displayCommand: describeDockerCommand(command, args), args, status: 'ok', durationMs: Math.round(performance.now() - started) });
       return result;
     } catch (error) {
-      addExecutionLog({ command, status: 'error', durationMs: Math.round(performance.now() - started), message: String(error) });
+      addExecutionLog({ command, displayCommand: describeDockerCommand(command, args), args, status: 'error', durationMs: Math.round(performance.now() - started), message: String(error) });
       throw error;
     }
   }, [addExecutionLog]);
@@ -68,6 +71,27 @@ export default function ContainerList() {
     const updated = await runInvoke<ContainerInfo[]>('list_containers', { all: true });
     useAppStore.getState().setContainers(updated);
   }, [runInvoke]);
+
+  const handleSelectAllFiltered = useCallback((checked: boolean) => {
+    if (checked) {
+      useAppStore.getState().selectAllContainers(filtered.map((c) => c.id));
+    } else {
+      clearContainerSelection();
+    }
+  }, [clearContainerSelection, filtered]);
+
+  const handleManualRefresh = useCallback(async () => {
+    setManualRefreshing(true);
+    try {
+      await refreshContainers();
+      addToast({ type: 'success', title: t('refreshCompleted'), message: t('containers') });
+    } catch (e) {
+      console.error(e);
+      addToast({ type: 'error', title: t('refreshFailed'), message: String(e) });
+    } finally {
+      setManualRefreshing(false);
+    }
+  }, [addToast, refreshContainers, t]);
 
   const handleBatch = useCallback(async (action: string) => {
     if (action === 'remove') {
@@ -257,111 +281,130 @@ export default function ContainerList() {
       .map((p) => `${p.publicPort}:${p.privatePort}`),
   ));
 
+  const renderTableColGroup = () => (
+    <colgroup>
+      <col className="w-[4%]" />
+      <col className="w-[17%]" />
+      <col className="w-[20%]" />
+      <col className="w-[10%]" />
+      <col className="w-[12%]" />
+      <col className="w-[6%]" />
+      <col className="w-[8%]" />
+      <col className="w-[10%]" />
+      <col className="w-[13%]" />
+    </colgroup>
+  );
+
+  const renderTableHeader = () => (
+    <thead>
+      <tr className="border-b border-zinc-800">
+        <th className="py-3 px-3">
+          <input
+            type="checkbox"
+            className="rounded border-zinc-600 bg-zinc-800"
+            onChange={(e) => handleSelectAllFiltered(e.target.checked)}
+          />
+        </th>
+        <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('name')}</th>
+        <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('image')}</th>
+        <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('status')}</th>
+        <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('ports')}</th>
+        <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('cpu')}</th>
+        <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('memory')}</th>
+        <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('group')}</th>
+        <th className="text-right py-3 px-4 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('actions')}</th>
+      </tr>
+    </thead>
+  );
+
   return (
     <div className="max-w-7xl mx-auto">
-      <header className="mb-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-bold tracking-tight">{t('containers')}</h2>
-            <p className="text-zinc-400 text-sm mt-1">{containers.length} {t('containers')}</p>
-          </div>
-        </div>
-      </header>
-
-      {/* Toolbar */}
-      <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <div className="relative flex-1 min-w-[200px] max-w-sm">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
-          <input
-            className="input pl-9"
-            placeholder={t('searchContainers')}
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-        </div>
-
-        {selectedIds.length > 0 && (
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-zinc-500 mr-1">{selectedIds.length} {t('selected')}</span>
-            <button disabled={pendingBatchAction !== null} onClick={() => handleBatch('start')} className="btn-ghost btn-xs" title={t('start')}>
-              {pendingBatchAction === 'start' ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-            </button>
-            <button disabled={pendingBatchAction !== null} onClick={() => handleBatch('stop')} className="btn-ghost btn-xs" title={t('stop')}>
-              {pendingBatchAction === 'stop' ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}
-            </button>
-            <button disabled={pendingBatchAction !== null} onClick={() => handleBatch('restart')} className="btn-ghost btn-xs" title={t('restart')}>
-              {pendingBatchAction === 'restart' ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
-            </button>
-            <button disabled={pendingBatchAction !== null} onClick={() => handleBatch('remove')} className="btn-danger btn-xs" title={t('remove')}>
-              {pendingBatchAction === 'remove' ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-            </button>
-            <button disabled={pendingBatchAction !== null} onClick={() => setShowBatchGroup((show) => !show)} className="btn-ghost btn-xs" title={t('group')}>
-              {pendingBatchAction === 'group' ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
-            </button>
-          </div>
-        )}
-
-        {selectedIds.length > 0 && showBatchGroup && (
-          <div className="flex items-center gap-2">
-            <input
-              className="input w-40 text-xs py-1.5"
-              placeholder={t('group')}
-              value={batchGroupValue}
-              onChange={(e) => setBatchGroupValue(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && saveBatchGroup()}
-              autoFocus
-            />
+      <div className="sticky -top-6 z-40 -mx-6 -mt-6 mb-4 border-b border-zinc-800 bg-zinc-950 px-6 pb-4 pt-10 shadow-lg shadow-black/20">
+        <header className="mb-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-2xl font-bold tracking-tight">{t('containers')}</h2>
+              <p className="text-zinc-400 text-sm mt-1">{containers.length} {t('containers')}</p>
+            </div>
             <button
-              disabled={pendingBatchAction !== null}
-              onClick={saveBatchGroup}
-              className="btn-secondary btn-xs"
+              type="button"
+              onClick={handleManualRefresh}
+              disabled={manualRefreshing}
+              className="btn-secondary text-xs"
+              title={t('refresh')}
             >
-              {pendingBatchAction === 'group' ? <Loader2 size={14} className="animate-spin" /> : t('group')}
+              <RefreshCw size={14} className={`mr-1 ${manualRefreshing ? 'animate-spin' : ''}`} />
+              {manualRefreshing ? t('refreshing') : t('refresh')}
             </button>
           </div>
-        )}
+        </header>
+
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-[200px] max-w-sm">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <input
+              className="input pl-9"
+              placeholder={t('searchContainers')}
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+
+          {selectedIds.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-xs text-zinc-500 mr-1">{selectedIds.length} {t('selected')}</span>
+              <button disabled={pendingBatchAction !== null} onClick={() => handleBatch('start')} className="btn-ghost btn-xs" title={t('start')}>
+                {pendingBatchAction === 'start' ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+              </button>
+              <button disabled={pendingBatchAction !== null} onClick={() => handleBatch('stop')} className="btn-ghost btn-xs" title={t('stop')}>
+                {pendingBatchAction === 'stop' ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}
+              </button>
+              <button disabled={pendingBatchAction !== null} onClick={() => handleBatch('restart')} className="btn-ghost btn-xs" title={t('restart')}>
+                {pendingBatchAction === 'restart' ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
+              </button>
+              <button disabled={pendingBatchAction !== null} onClick={() => handleBatch('remove')} className="btn-danger btn-xs" title={t('remove')}>
+                {pendingBatchAction === 'remove' ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+              </button>
+              <button disabled={pendingBatchAction !== null} onClick={() => setShowBatchGroup((show) => !show)} className="btn-ghost btn-xs" title={t('group')}>
+                {pendingBatchAction === 'group' ? <Loader2 size={14} className="animate-spin" /> : <FolderOpen size={14} />}
+              </button>
+            </div>
+          )}
+
+          {selectedIds.length > 0 && showBatchGroup && (
+            <div className="flex items-center gap-2">
+              <input
+                className="input w-40 text-xs py-1.5"
+                placeholder={t('group')}
+                value={batchGroupValue}
+                onChange={(e) => setBatchGroupValue(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && saveBatchGroup()}
+                autoFocus
+              />
+              <button
+                disabled={pendingBatchAction !== null}
+                onClick={saveBatchGroup}
+                className="btn-secondary btn-xs"
+              >
+                {pendingBatchAction === 'group' ? <Loader2 size={14} className="animate-spin" /> : t('group')}
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="card mt-4 overflow-hidden rounded-b-none border-b-0">
+          <table className="w-full table-fixed text-sm">
+            {renderTableColGroup()}
+            {renderTableHeader()}
+          </table>
+        </div>
       </div>
 
       {/* Table */}
-      <div className="card overflow-hidden">
+      <div className="card overflow-hidden rounded-t-none">
         <div>
           <table className="w-full table-fixed text-sm">
-            <colgroup>
-              <col className="w-[4%]" />
-              <col className="w-[17%]" />
-              <col className="w-[20%]" />
-              <col className="w-[10%]" />
-              <col className="w-[12%]" />
-              <col className="w-[6%]" />
-              <col className="w-[8%]" />
-              <col className="w-[10%]" />
-              <col className="w-[13%]" />
-            </colgroup>
-            <thead>
-              <tr className="border-b border-zinc-800">
-                <th className="py-3 px-3">
-                  <input
-                    type="checkbox"
-                    className="rounded border-zinc-600 bg-zinc-800"
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        useAppStore.getState().selectAllContainers(filtered.map((c) => c.id));
-                      } else {
-                        clearContainerSelection();
-                      }
-                    }}
-                  />
-                </th>
-                <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('name')}</th>
-                <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('image')}</th>
-                <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('status')}</th>
-                <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('ports')}</th>
-                <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('cpu')}</th>
-                <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('memory')}</th>
-                <th className="text-left py-3 px-3 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('group')}</th>
-                <th className="text-right py-3 px-4 text-xs font-medium text-zinc-400 uppercase tracking-wider">{t('actions')}</th>
-              </tr>
-            </thead>
+            {renderTableColGroup()}
             <tbody>
               {groupNames.map((groupName) => (
                 <Fragment key={groupName}>

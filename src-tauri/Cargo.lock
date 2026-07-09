@@ -5358,10 +5358,11 @@ dependencies = [
 
 [[package]]
 name = "wsl-docker-manager"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "bollard",
  "chrono",
+ "encoding_rs",
  "futures",
  "serde",
  "serde_json",

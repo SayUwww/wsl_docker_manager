@@ -1,9 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAppStore } from './store';
 import { useDocker } from './hooks/useDocker';
 import Sidebar from './components/Layout/Sidebar';
 import BackToTopButton from './components/Layout/BackToTopButton';
 import ConfirmDialog from './components/Layout/ConfirmDialog';
+import CloseBehaviorDialog from './components/Layout/CloseBehaviorDialog';
 import ToastViewport from './components/Layout/ToastViewport';
 import Dashboard from './components/Dashboard/Dashboard';
 import ContainerList from './components/Containers/ContainerList';
@@ -12,13 +15,18 @@ import ContainerTerminal from './components/Containers/ContainerTerminal';
 import ImageList from './components/Images/ImageList';
 import NetworkGraph from './components/Networks/NetworkGraph';
 import VolumeList from './components/Volumes/VolumeList';
+import { CloseBehavior } from './types';
 
 export default function App() {
   const activeTab = useAppStore((s) => s.activeTab);
   const logContainerId = useAppStore((s) => s.logContainerId);
   const terminalContainerId = useAppStore((s) => s.terminalContainerId);
   const themeMode = useAppStore((s) => s.themeMode);
+  const closeBehavior = useAppStore((s) => s.closeBehavior);
+  const setCloseBehavior = useAppStore((s) => s.setCloseBehavior);
   const mainRef = useRef<HTMLElement | null>(null);
+  const allowCloseRef = useRef(false);
+  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const { startPolling, stopPolling } = useDocker();
 
   useEffect(() => {
@@ -31,12 +39,66 @@ export default function App() {
     document.documentElement.classList.toggle('theme-dark', themeMode === 'dark');
   }, [themeMode]);
 
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+
+    const appWindow = getCurrentWindow();
+    let unlisten: (() => void) | undefined;
+
+    appWindow.onCloseRequested(async (event) => {
+      if (allowCloseRef.current) return;
+
+      event.preventDefault();
+
+      if (closeBehavior === 'exit') {
+        await invoke('exit_app');
+        return;
+      }
+
+      if (closeBehavior === 'minimize') {
+        await minimizeToTray(appWindow);
+        return;
+      }
+
+      setCloseDialogOpen(true);
+    }).then((handler) => {
+      unlisten = handler;
+    });
+
+    return () => unlisten?.();
+  }, [closeBehavior]);
+
+  const handleCloseChoice = useCallback(async (behavior: CloseBehavior, remember: boolean) => {
+    const appWindow = getCurrentWindow();
+    if (remember) setCloseBehavior(behavior);
+    setCloseDialogOpen(false);
+
+    if (behavior === 'minimize') {
+      await minimizeToTray(appWindow);
+      return;
+    }
+
+    allowCloseRef.current = true;
+    await invoke('exit_app');
+  }, [setCloseBehavior]);
+
+  const overlays = (
+    <>
+      <ConfirmDialog />
+      <CloseBehaviorDialog
+        open={closeDialogOpen}
+        onCancel={() => setCloseDialogOpen(false)}
+        onChoose={handleCloseChoice}
+      />
+      <ToastViewport />
+    </>
+  );
+
   if (logContainerId) {
     return (
       <>
         <ContainerLogs />
-        <ConfirmDialog />
-        <ToastViewport />
+        {overlays}
       </>
     );
   }
@@ -45,8 +107,7 @@ export default function App() {
     return (
       <>
         <ContainerTerminal />
-        <ConfirmDialog />
-        <ToastViewport />
+        {overlays}
       </>
     );
   }
@@ -62,8 +123,19 @@ export default function App() {
         {activeTab === 'volumes' && <VolumeList />}
         <BackToTopButton containerRef={mainRef} />
       </main>
-      <ConfirmDialog />
-      <ToastViewport />
+      {overlays}
     </div>
   );
+}
+
+async function minimizeToTray(appWindow: ReturnType<typeof getCurrentWindow>) {
+  try {
+    await appWindow.hide();
+    if (await appWindow.isVisible()) {
+      await appWindow.minimize();
+    }
+  } catch (error) {
+    console.error('Failed to hide window, minimizing instead', error);
+    await appWindow.minimize();
+  }
 }

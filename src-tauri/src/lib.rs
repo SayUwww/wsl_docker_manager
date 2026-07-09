@@ -5,6 +5,11 @@ mod wsl_docker;
 
 use tauri::Manager;
 
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -78,6 +83,7 @@ pub fn run() {
             commands::volumes::list_volumes,
             commands::volumes::remove_volume,
             commands::volumes::prune_volumes,
+            exit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running WSL Docker Manager");

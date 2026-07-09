@@ -85,8 +85,10 @@ export interface ExecutionLog {
   id: string;
   time: string;
   command: string;
+  displayCommand?: string;
   status: 'ok' | 'error';
   durationMs: number;
+  args?: Record<string, unknown>;
   message?: string;
 }
 
@@ -100,6 +102,7 @@ export interface ToastMessage {
 }
 
 export type ThemeMode = 'dark' | 'light';
+export type CloseBehavior = 'minimize' | 'exit';
 
 export interface ConfirmationRequest {
   id: string;
