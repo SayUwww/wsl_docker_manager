@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useAppStore } from './store';
 import { useDocker } from './hooks/useDocker';
@@ -7,6 +8,8 @@ import Sidebar from './components/Layout/Sidebar';
 import BackToTopButton from './components/Layout/BackToTopButton';
 import ConfirmDialog from './components/Layout/ConfirmDialog';
 import CloseBehaviorDialog from './components/Layout/CloseBehaviorDialog';
+import GlobalLoadingOverlay from './components/Layout/GlobalLoadingOverlay';
+import SettingsDialog from './components/Layout/SettingsDialog';
 import ToastViewport from './components/Layout/ToastViewport';
 import Dashboard from './components/Dashboard/Dashboard';
 import ContainerList from './components/Containers/ContainerList';
@@ -24,10 +27,20 @@ export default function App() {
   const themeMode = useAppStore((s) => s.themeMode);
   const closeBehavior = useAppStore((s) => s.closeBehavior);
   const setCloseBehavior = useAppStore((s) => s.setCloseBehavior);
+  const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
   const mainRef = useRef<HTMLElement | null>(null);
   const allowCloseRef = useRef(false);
   const [closeDialogOpen, setCloseDialogOpen] = useState(false);
-  const { startPolling, stopPolling } = useDocker();
+  const {
+    refreshContainers,
+    refreshDockerStatus,
+    refreshImages,
+    refreshNetworks,
+    refreshResourceStats,
+    refreshVolumes,
+    startPolling,
+    stopPolling,
+  } = useDocker();
 
   useEffect(() => {
     startPolling();
@@ -38,6 +51,33 @@ export default function App() {
     document.documentElement.classList.toggle('theme-light', themeMode === 'light');
     document.documentElement.classList.toggle('theme-dark', themeMode === 'dark');
   }, [themeMode]);
+
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+
+    const unlisteners: Array<() => void> = [];
+    listen('open-settings', () => setSettingsOpen(true)).then((unlisten) => unlisteners.push(unlisten));
+    listen('refresh-data', () => {
+      refreshDockerStatus();
+      refreshResourceStats();
+      refreshContainers(true);
+      refreshImages();
+      refreshNetworks();
+      refreshVolumes();
+    }).then((unlisten) => unlisteners.push(unlisten));
+
+    return () => {
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }, [
+    refreshContainers,
+    refreshDockerStatus,
+    refreshImages,
+    refreshNetworks,
+    refreshResourceStats,
+    refreshVolumes,
+    setSettingsOpen,
+  ]);
 
   useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return;
@@ -90,6 +130,8 @@ export default function App() {
         onCancel={() => setCloseDialogOpen(false)}
         onChoose={handleCloseChoice}
       />
+      <SettingsDialog />
+      <GlobalLoadingOverlay />
       <ToastViewport />
     </>
   );

@@ -1,4 +1,5 @@
 use crate::docker::{self, ConnectionMode, DockerState};
+use crate::remote_docker;
 use crate::wsl_docker;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -40,12 +41,39 @@ pub struct ConnectionModeResponse {
     pub mode: ConnectionMode,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteConfigResponse {
+    pub selected_profile_id: Option<String>,
+    pub profiles: Vec<docker::RemoteProfile>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTestResponse {
+    pub message: String,
+}
+
 #[tauri::command]
 pub async fn get_docker_status(
     state: State<'_, DockerState>,
 ) -> Result<DockerStatusResponse, String> {
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return match wsl_docker::info() {
+            Ok(info) => Ok(wsl_info_response(info)),
+            Err(_) => Ok(DockerStatusResponse {
+                connected: false,
+                info: None,
+            }),
+        };
+    }
+
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        let info = tokio::task::spawn_blocking(move || remote_docker::info(&profile))
+            .await
+            .map_err(|e| e.to_string())?;
+        return match info {
             Ok(info) => Ok(wsl_info_response(info)),
             Err(_) => Ok(DockerStatusResponse {
                 connected: false,
@@ -99,11 +127,103 @@ pub async fn set_connection_mode(
 }
 
 #[tauri::command]
+pub async fn get_remote_config(
+    state: State<'_, DockerState>,
+) -> Result<RemoteConfigResponse, String> {
+    let config = state.remote_config.lock().await.clone();
+    Ok(RemoteConfigResponse {
+        selected_profile_id: config.selected_profile_id,
+        profiles: config.profiles,
+    })
+}
+
+#[tauri::command]
+pub async fn save_remote_profile(
+    state: State<'_, DockerState>,
+    profile: docker::RemoteProfile,
+) -> Result<RemoteConfigResponse, String> {
+    {
+        let mut config = state.remote_config.lock().await;
+        if let Some(existing) = config.profiles.iter_mut().find(|item| item.id == profile.id) {
+            *existing = profile.clone();
+        } else {
+            config.profiles.push(profile.clone());
+        }
+        if config.selected_profile_id.is_none() {
+            config.selected_profile_id = Some(profile.id);
+        }
+    }
+    state.save_remote_config().await?;
+    get_remote_config(state).await
+}
+
+#[tauri::command]
+pub async fn delete_remote_profile(
+    state: State<'_, DockerState>,
+    id: String,
+) -> Result<RemoteConfigResponse, String> {
+    {
+        let mut config = state.remote_config.lock().await;
+        config.profiles.retain(|profile| profile.id != id);
+        if config.selected_profile_id.as_deref() == Some(id.as_str()) {
+            config.selected_profile_id = config.profiles.first().map(|profile| profile.id.clone());
+        }
+    }
+    state.save_remote_config().await?;
+    get_remote_config(state).await
+}
+
+#[tauri::command]
+pub async fn select_remote_profile(
+    state: State<'_, DockerState>,
+    id: String,
+) -> Result<RemoteConfigResponse, String> {
+    {
+        let mut config = state.remote_config.lock().await;
+        if !config.profiles.iter().any(|profile| profile.id == id) {
+            return Err("Remote profile not found".to_string());
+        }
+        config.selected_profile_id = Some(id);
+    }
+    state.save_remote_config().await?;
+    get_remote_config(state).await
+}
+
+#[tauri::command]
+pub async fn test_remote_profile(profile: docker::RemoteProfile) -> Result<RemoteTestResponse, String> {
+    let message = tokio::task::spawn_blocking(move || remote_docker::test_connection(&profile))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(RemoteTestResponse { message })
+}
+
+#[tauri::command]
 pub async fn get_resource_stats(
     state: State<'_, DockerState>,
 ) -> Result<ResourceStatsResponse, String> {
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         let stats = wsl_docker::resource_stats()?;
+        let mem_percent = if stats.mem_total > 0 {
+            (stats.mem_used as f64 / stats.mem_total as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        return Ok(ResourceStatsResponse {
+            cpu_percent: stats.cpu_percent,
+            mem_used: stats.mem_used,
+            mem_total: stats.mem_total,
+            mem_percent,
+            disk_used: stats.disk_used,
+            disk_total: stats.disk_total,
+        });
+    }
+
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        let stats = tokio::task::spawn_blocking(move || remote_docker::resource_stats(&profile))
+            .await
+            .map_err(|e| e.to_string())??;
         let mem_percent = if stats.mem_total > 0 {
             (stats.mem_used as f64 / stats.mem_total as f64) * 100.0
         } else {

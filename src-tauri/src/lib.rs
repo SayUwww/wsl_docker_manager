@@ -1,5 +1,6 @@
 mod commands;
 mod docker;
+mod remote_docker;
 mod tray;
 mod wsl_docker;
 
@@ -34,6 +35,12 @@ pub fn run() {
 
             tray::create_tray(app)?;
 
+            if std::env::args().any(|arg| arg == "--hidden") {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
+
             // Register global shortcut via the plugin
             let handle = app.handle().clone();
             app.handle().plugin(
@@ -62,6 +69,11 @@ pub fn run() {
             commands::docker_status::get_docker_status,
             commands::docker_status::get_connection_mode,
             commands::docker_status::set_connection_mode,
+            commands::docker_status::get_remote_config,
+            commands::docker_status::save_remote_profile,
+            commands::docker_status::delete_remote_profile,
+            commands::docker_status::select_remote_profile,
+            commands::docker_status::test_remote_profile,
             commands::docker_status::get_resource_stats,
             commands::containers::list_containers,
             commands::containers::start_container,

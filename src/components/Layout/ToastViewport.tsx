@@ -9,7 +9,7 @@ export default function ToastViewport() {
 
   return (
     <div
-      className="pointer-events-none fixed right-5 top-5 z-50 flex w-[min(420px,calc(100vw-2.5rem))] flex-col gap-2"
+      className="pointer-events-none fixed right-5 top-5 z-[120] flex w-[min(420px,calc(100vw-2.5rem))] flex-col gap-2"
       aria-live="polite"
       aria-atomic="true"
     >

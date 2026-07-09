@@ -72,7 +72,7 @@ export default function Dashboard() {
         />
         <ActiveContainers
           title={t('stoppedList')}
-          containers={stoppedContainers.slice(0, 5)}
+          containers={stoppedContainers}
           emptyMessage={t('allRunning')}
         />
       </div>

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store';
 import { NetworkInfo } from '../../types';
 import { translate } from '../../i18n';
+import { useDocker } from '../../hooks/useDocker';
 import {
   ReactFlow, Node, Edge, Controls, Background, BackgroundVariant,
   MarkerType, useNodesState, useEdgesState, Handle, Position,
@@ -34,13 +35,13 @@ const nodeTypes = {
 
 export default function NetworkGraph() {
   const networks = useAppStore((s) => s.networks);
-  const setNetworks = useAppStore((s) => s.setNetworks);
   const language = useAppStore((s) => s.language);
   const addToast = useAppStore((s) => s.addToast);
   const requestConfirmation = useAppStore((s) => s.requestConfirmation);
+  const isNetworksLoading = useAppStore((s) => Boolean(s.commandLoading.list_networks));
+  const { refreshNetworks } = useDocker();
   const [selectedNetwork, setSelectedNetwork] = useState<NetworkInfo | null>(null);
   const [removingNetworkId, setRemovingNetworkId] = useState<string | null>(null);
-  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
@@ -104,8 +105,7 @@ export default function NetworkGraph() {
     setRemovingNetworkId(id);
     try {
       await invoke('remove_network', { id });
-      const updated = await invoke<NetworkInfo[]>('list_networks');
-      setNetworks(updated);
+      await refreshNetworks();
       setSelectedNetwork(null);
       addToast({ type: 'success', title: t('networkRemoved') });
     } catch (e) {
@@ -114,26 +114,23 @@ export default function NetworkGraph() {
     } finally {
       setRemovingNetworkId(null);
     }
-  }, [addToast, networks, requestConfirmation, setNetworks, t]);
+  }, [addToast, networks, refreshNetworks, requestConfirmation, t]);
 
   const handleManualRefresh = useCallback(async () => {
-    setManualRefreshing(true);
-    try {
-      const updated = await invoke<NetworkInfo[]>('list_networks');
-      setNetworks(updated);
+    if (isNetworksLoading) return;
+    const refreshed = await refreshNetworks();
+    if (refreshed) {
+      const updated = useAppStore.getState().networks;
       if (selectedNetwork) {
         const nextSelected = updated.find((network) => network.id === selectedNetwork.id) ?? null;
         setSelectedNetwork(nextSelected);
         if (nextSelected) buildGraph(nextSelected);
       }
       addToast({ type: 'success', title: t('refreshCompleted'), message: t('networks') });
-    } catch (e) {
-      console.error(e);
-      addToast({ type: 'error', title: t('refreshFailed'), message: String(e) });
-    } finally {
-      setManualRefreshing(false);
+    } else {
+      addToast({ type: 'info', title: t('refreshing'), message: t('networks') });
     }
-  }, [addToast, buildGraph, selectedNetwork, setNetworks, t]);
+  }, [addToast, buildGraph, isNetworksLoading, refreshNetworks, selectedNetwork, t]);
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -146,12 +143,12 @@ export default function NetworkGraph() {
           <button
             type="button"
             onClick={handleManualRefresh}
-            disabled={manualRefreshing}
+            disabled={isNetworksLoading}
             className="btn-secondary text-xs"
             title={t('refresh')}
           >
-            <RefreshCw size={14} className={`mr-1 ${manualRefreshing ? 'animate-spin' : ''}`} />
-            {manualRefreshing ? t('refreshing') : t('refresh')}
+            <RefreshCw size={14} className={`mr-1 ${isNetworksLoading ? 'animate-spin' : ''}`} />
+            {isNetworksLoading ? t('refreshing') : t('refresh')}
           </button>
         </div>
       </header>
@@ -198,7 +195,7 @@ export default function NetworkGraph() {
           ))}
           {networks.length === 0 && (
             <div className="col-span-full card p-16 text-center text-zinc-500">
-              {t('noNetworks')}
+              {isNetworksLoading ? t('loadingData') : t('noNetworks')}
             </div>
           )}
         </div>

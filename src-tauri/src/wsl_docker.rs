@@ -521,12 +521,12 @@ fn docker_api(path: &str) -> Result<String, String> {
 
 fn docker_output(command: &str) -> Result<String, String> {
     let wrapped_command = format!(
-        "timeout {} sh -lc {}",
+        "timeout {} sh -c {}",
         DOCKER_COMMAND_TIMEOUT_SECONDS,
         sh_quote(command)
     );
     let mut command = Command::new("wsl");
-    command.args(["-e", "sh", "-lc", &wrapped_command]);
+    command.args(["-e", "sh", "-c", &wrapped_command]);
 
     #[cfg(target_os = "windows")]
     command.creation_flags(CREATE_NO_WINDOW);

@@ -1,4 +1,5 @@
 use crate::docker::{self, ConnectionMode, DockerState};
+use crate::remote_docker;
 use crate::wsl_docker;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -22,6 +23,13 @@ pub struct ImageResponse {
 pub async fn list_images(state: State<'_, DockerState>) -> Result<Vec<ImageResponse>, String> {
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return list_wsl_images();
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || remote_docker::list_images(&profile))
+            .await
+            .map_err(|e| e.to_string())?
+            .and_then(remote_images_to_response);
     }
 
     let docker = DockerState::get_docker(state).await?;
@@ -67,6 +75,21 @@ pub async fn remove_image(
             )),
         };
     }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || {
+            match remote_docker::remove_image(&profile, &id, force) {
+                Ok(output) => Ok(output.lines().map(ToOwned::to_owned).collect()),
+                Err(e) => Err(format!(
+                    "Failed to remove image: {}{}",
+                    e,
+                    format_remote_image_container_refs(&profile, &id)
+                )),
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
 
     let docker = DockerState::get_docker(state).await?;
     let options = bollard::image::RemoveImageOptions {
@@ -86,6 +109,13 @@ pub async fn remove_image(
 pub async fn prune_images(state: State<'_, DockerState>) -> Result<String, String> {
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return wsl_docker::prune_images().map_err(|e| format!("Failed to prune images: {}", e));
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || remote_docker::prune_images(&profile))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Failed to prune images: {}", e));
     }
 
     let docker = DockerState::get_docker(state).await?;
@@ -125,12 +155,41 @@ fn format_image_container_refs(id: &str) -> String {
     format!(" Used by container(s): {}", refs)
 }
 
+fn format_remote_image_container_refs(profile: &docker::RemoteProfile, id: &str) -> String {
+    let Ok(containers) = remote_docker::image_containers(profile, id) else {
+        return String::new();
+    };
+    if containers.is_empty() {
+        return String::new();
+    }
+
+    let refs = containers
+        .into_iter()
+        .map(|container| {
+            format!(
+                "{} [{}] ({}, {}, image {})",
+                container.names,
+                short_id(&container.id),
+                container.state,
+                container.status,
+                short_id(&container.image)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!(" Used by container(s): {}", refs)
+}
+
 fn short_id(id: &str) -> String {
     id.trim_start_matches("sha256:").chars().take(12).collect()
 }
 
 fn list_wsl_images() -> Result<Vec<ImageResponse>, String> {
-    Ok(wsl_docker::list_images()?
+    remote_images_to_response(wsl_docker::list_images()?)
+}
+
+fn remote_images_to_response(images: Vec<wsl_docker::Image>) -> Result<Vec<ImageResponse>, String> {
+    Ok(images
         .into_iter()
         .map(|img| {
             let repo_tag = if img.repository == "<none>" || img.tag == "<none>" {

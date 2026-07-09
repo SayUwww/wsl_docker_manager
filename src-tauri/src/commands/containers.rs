@@ -1,4 +1,5 @@
 use crate::docker::{self, ConnectionMode, DockerState};
+use crate::remote_docker;
 use crate::wsl_docker;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -41,6 +42,9 @@ pub async fn list_containers(
 ) -> Result<Vec<ContainerResponse>, String> {
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return list_wsl_containers(state, all).await;
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        return list_remote_containers(state, all).await;
     }
 
     let docker = DockerState::get_docker(state.clone()).await?;
@@ -113,6 +117,13 @@ pub async fn start_container(state: State<'_, DockerState>, id: String) -> Resul
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return wsl_docker::start_container(&id).map_err(|e| format!("Failed to start: {}", e));
     }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || remote_docker::start_container(&profile, &id))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Failed to start: {}", e));
+    }
     let docker = DockerState::get_docker(state).await?;
     docker
         .start_container::<String>(&id, None)
@@ -125,6 +136,13 @@ pub async fn stop_container(state: State<'_, DockerState>, id: String) -> Result
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return wsl_docker::stop_container(&id).map_err(|e| format!("Failed to stop: {}", e));
     }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || remote_docker::stop_container(&profile, &id))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Failed to stop: {}", e));
+    }
     let docker = DockerState::get_docker(state).await?;
     docker
         .stop_container(&id, None)
@@ -136,6 +154,13 @@ pub async fn stop_container(state: State<'_, DockerState>, id: String) -> Result
 pub async fn restart_container(state: State<'_, DockerState>, id: String) -> Result<(), String> {
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return wsl_docker::restart_container(&id).map_err(|e| format!("Failed to restart: {}", e));
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || remote_docker::restart_container(&profile, &id))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Failed to restart: {}", e));
     }
     let docker = DockerState::get_docker(state).await?;
     docker
@@ -153,6 +178,15 @@ pub async fn remove_container(
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return wsl_docker::remove_container(&id, force)
             .map_err(|e| format!("Failed to remove: {}", e));
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || {
+            remote_docker::remove_container(&profile, &id, force)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Failed to remove: {}", e));
     }
     let docker = DockerState::get_docker(state).await?;
     let options = bollard::container::RemoveContainerOptions {
@@ -179,6 +213,20 @@ pub async fn batch_start_containers(
         }
         return Ok(errors);
     }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || {
+            let mut errors = Vec::new();
+            for id in ids {
+                if let Err(e) = remote_docker::start_container(&profile, &id) {
+                    errors.push(format!("{}: {}", id, e));
+                }
+            }
+            errors
+        })
+        .await
+        .map_err(|e| e.to_string());
+    }
 
     let docker = DockerState::get_docker(state).await?;
     for id in ids {
@@ -202,6 +250,20 @@ pub async fn batch_stop_containers(
             }
         }
         return Ok(errors);
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || {
+            let mut errors = Vec::new();
+            for id in ids {
+                if let Err(e) = remote_docker::stop_container(&profile, &id) {
+                    errors.push(format!("{}: {}", id, e));
+                }
+            }
+            errors
+        })
+        .await
+        .map_err(|e| e.to_string());
     }
 
     let docker = DockerState::get_docker(state).await?;
@@ -227,6 +289,20 @@ pub async fn batch_restart_containers(
         }
         return Ok(errors);
     }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || {
+            let mut errors = Vec::new();
+            for id in ids {
+                if let Err(e) = remote_docker::restart_container(&profile, &id) {
+                    errors.push(format!("{}: {}", id, e));
+                }
+            }
+            errors
+        })
+        .await
+        .map_err(|e| e.to_string());
+    }
 
     let docker = DockerState::get_docker(state).await?;
     for id in ids {
@@ -251,6 +327,20 @@ pub async fn batch_remove_containers(
             }
         }
         return Ok(errors);
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || {
+            let mut errors = Vec::new();
+            for id in ids {
+                if let Err(e) = remote_docker::remove_container(&profile, &id, force) {
+                    errors.push(format!("{}: {}", id, e));
+                }
+            }
+            errors
+        })
+        .await
+        .map_err(|e| e.to_string());
     }
 
     let docker = DockerState::get_docker(state).await?;
@@ -283,6 +373,22 @@ pub async fn get_container_logs(
                 })
                 .collect()
         });
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || remote_docker::container_logs(&profile, &id, tail))
+            .await
+            .map_err(|e| e.to_string())?
+            .map(|lines| {
+                lines
+                    .into_iter()
+                    .map(|message| LogEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        stream: "stdout".to_string(),
+                        message,
+                    })
+                    .collect()
+            });
     }
 
     let docker = DockerState::get_docker(state).await?;
@@ -333,6 +439,12 @@ pub async fn exec_container(
 ) -> Result<String, String> {
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return wsl_docker::exec_container(&id, &cmd);
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || remote_docker::exec_container(&profile, &id, &cmd))
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     let docker = DockerState::get_docker(state).await?;
@@ -420,6 +532,64 @@ async fn list_wsl_containers(
             }
         })
         .collect())
+}
+
+async fn list_remote_containers(
+    state: State<'_, DockerState>,
+    all: bool,
+) -> Result<Vec<ContainerResponse>, String> {
+    let profile = DockerState::selected_remote_profile(&state).await?;
+    let list_profile = profile.clone();
+    let containers = tokio::task::spawn_blocking(move || remote_docker::list_containers(&list_profile, all))
+        .await
+        .map_err(|e| e.to_string())??;
+    let meta = state.container_meta.lock().await.clone();
+
+    tokio::task::spawn_blocking(move || {
+        containers
+            .into_iter()
+            .map(|c| {
+                let (cpu_percent, mem_percent, mem_usage, mem_limit) =
+                    if c.state.eq_ignore_ascii_case("running") {
+                        remote_docker::container_stats(&profile, &c.id)
+                            .ok()
+                            .map(|stats| {
+                                let (used, limit) = wsl_docker::mem_usage_parts(&stats.mem_usage);
+                                (
+                                    wsl_docker::percent(&stats.cpu_perc),
+                                    wsl_docker::percent(&stats.mem_perc),
+                                    used,
+                                    limit,
+                                )
+                            })
+                            .unwrap_or((0.0, 0.0, "N/A".to_string(), "N/A".to_string()))
+                    } else {
+                        (0.0, 0.0, "N/A".to_string(), "N/A".to_string())
+                    };
+                let container_meta = meta.get(&c.id);
+
+                ContainerResponse {
+                    id: c.id,
+                    name: c.names.trim_start_matches('/').to_string(),
+                    image: c.image,
+                    image_id: c.image_id,
+                    command: c.command,
+                    created: c.created_at,
+                    state: c.state,
+                    status: c.status,
+                    ports: parse_wsl_ports(&c.ports),
+                    cpu_percent,
+                    mem_percent,
+                    mem_usage,
+                    mem_limit,
+                    group: container_meta.and_then(|m| m.group.clone()),
+                    urls: container_meta.and_then(|m| m.urls.clone()),
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 fn parse_wsl_ports(ports: &str) -> Vec<PortInfo> {

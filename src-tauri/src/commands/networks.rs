@@ -1,4 +1,5 @@
 use crate::docker::{self, ConnectionMode, DockerState};
+use crate::remote_docker;
 use crate::wsl_docker;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -28,6 +29,12 @@ pub struct NetworkContainerInfo {
 pub async fn list_networks(state: State<'_, DockerState>) -> Result<Vec<NetworkResponse>, String> {
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return list_wsl_networks();
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || list_remote_networks(profile))
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     let docker = DockerState::get_docker(state).await?;
@@ -84,6 +91,13 @@ pub async fn remove_network(state: State<'_, DockerState>, id: String) -> Result
         return wsl_docker::remove_network(&id)
             .map_err(|e| format!("Failed to remove network: {}", e));
     }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || remote_docker::remove_network(&profile, &id))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Failed to remove network: {}", e));
+    }
 
     let docker = DockerState::get_docker(state).await?;
     docker
@@ -114,6 +128,56 @@ fn list_wsl_networks() -> Result<Vec<NetworkResponse>, String> {
             .collect();
 
     Ok(wsl_docker::inspect_networks()?
+        .into_iter()
+        .filter(|n| !is_predefined_network(Some(&n.name), Some(&n.driver)))
+        .map(|n| {
+            let containers = n
+                .containers
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(id, info)| NetworkContainerInfo {
+                    name: info.name.unwrap_or_else(|| id.clone()),
+                    id,
+                    ipv4: info.ipv4_address.unwrap_or_default(),
+                    ipv6: info.ipv6_address.unwrap_or_default(),
+                })
+                .collect();
+            let containers = merge_network_containers(containers, &container_map, &n.id, &n.name);
+
+            NetworkResponse {
+                id: n.id,
+                name: n.name,
+                driver: n.driver,
+                scope: n.scope,
+                internal: n.internal.unwrap_or(false),
+                containers,
+            }
+        })
+        .collect())
+}
+
+fn list_remote_networks(profile: docker::RemoteProfile) -> Result<Vec<NetworkResponse>, String> {
+    let container_map: HashMap<String, Vec<NetworkContainerInfo>> =
+        remote_docker::network_container_map(&profile)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(key, containers)| {
+                (
+                    key,
+                    containers
+                        .into_iter()
+                        .map(|container| NetworkContainerInfo {
+                            id: container.container_id,
+                            name: container.name,
+                            ipv4: container.ipv4,
+                            ipv6: container.ipv6,
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+
+    Ok(remote_docker::inspect_networks(&profile)?
         .into_iter()
         .filter(|n| !is_predefined_network(Some(&n.name), Some(&n.driver)))
         .map(|n| {

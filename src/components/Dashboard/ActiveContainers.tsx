@@ -11,6 +11,7 @@ interface ActiveContainersProps {
 export default function ActiveContainers({ title, containers, emptyMessage }: ActiveContainersProps) {
   const setActiveTab = useAppStore((s) => s.setActiveTab);
   const language = useAppStore((s) => s.language);
+  const visibleContainers = containers.slice(0, 3);
 
   const formatPorts = (ports: ContainerInfo['ports']) => {
     return ports
@@ -30,7 +31,7 @@ export default function ActiveContainers({ title, containers, emptyMessage }: Ac
         <p className="text-zinc-500 text-sm py-6 text-center">{emptyMessage}</p>
       ) : (
         <div className="space-y-2">
-          {containers.map((c) => (
+          {visibleContainers.map((c) => (
             <div
               key={c.id}
               className="flex items-center justify-between p-3 rounded-xl bg-zinc-800/40 hover:bg-zinc-800/70 transition-colors group"

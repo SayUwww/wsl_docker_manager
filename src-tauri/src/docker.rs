@@ -20,11 +20,47 @@ pub struct ContainerMeta {
     pub urls: Option<Vec<String>>,
 }
 
+#[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteProfile {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth_type: RemoteAuthType,
+    pub password: Option<String>,
+    pub private_key_path: Option<String>,
+    pub passphrase: Option<String>,
+    pub docker_socket: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteAuthType {
+    Password,
+    PrivateKey,
+}
+
+impl Default for RemoteAuthType {
+    fn default() -> Self {
+        Self::PrivateKey
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteConfig {
+    pub selected_profile_id: Option<String>,
+    pub profiles: Vec<RemoteProfile>,
+}
+
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ConnectionMode {
     Wsl,
     Direct,
+    Remote,
 }
 
 pub struct DockerState {
@@ -33,6 +69,8 @@ pub struct DockerState {
     pub connection_mode: Arc<AsyncMutex<ConnectionMode>>,
     pub container_meta: Arc<AsyncMutex<HashMap<String, ContainerMeta>>>,
     pub container_meta_path: Arc<AsyncMutex<Option<PathBuf>>>,
+    pub remote_config: Arc<AsyncMutex<RemoteConfig>>,
+    pub remote_config_path: Arc<AsyncMutex<Option<PathBuf>>>,
 }
 
 impl DockerState {
@@ -43,6 +81,8 @@ impl DockerState {
             connection_mode: Arc::new(AsyncMutex::new(ConnectionMode::Wsl)),
             container_meta: Arc::new(AsyncMutex::new(HashMap::new())),
             container_meta_path: Arc::new(AsyncMutex::new(None)),
+            remote_config: Arc::new(AsyncMutex::new(RemoteConfig::default())),
+            remote_config_path: Arc::new(AsyncMutex::new(None)),
         }
     }
 
@@ -63,6 +103,16 @@ impl DockerState {
             *self.container_meta.lock().await = meta;
         }
         *self.container_meta_path.lock().await = Some(path);
+
+        let remote_path = dir.join("remote-profiles.json");
+        if remote_path.exists() {
+            let data = std::fs::read_to_string(&remote_path)
+                .map_err(|e| format!("Failed to read remote profiles: {}", e))?;
+            let config: RemoteConfig = serde_json::from_str(&data)
+                .map_err(|e| format!("Failed to parse remote profiles: {}", e))?;
+            *self.remote_config.lock().await = config;
+        }
+        *self.remote_config_path.lock().await = Some(remote_path);
         Ok(())
     }
 
@@ -74,6 +124,16 @@ impl DockerState {
         let data = serde_json::to_string_pretty(&*meta)
             .map_err(|e| format!("Failed to serialize container metadata: {}", e))?;
         std::fs::write(path, data).map_err(|e| format!("Failed to save container metadata: {}", e))
+    }
+
+    pub async fn save_remote_config(&self) -> Result<(), String> {
+        let Some(path) = self.remote_config_path.lock().await.clone() else {
+            return Ok(());
+        };
+        let config = self.remote_config.lock().await;
+        let data = serde_json::to_string_pretty(&*config)
+            .map_err(|e| format!("Failed to serialize remote profiles: {}", e))?;
+        std::fs::write(path, data).map_err(|e| format!("Failed to save remote profiles: {}", e))
     }
 
     pub async fn connect(app: &AppHandle) {
@@ -131,10 +191,25 @@ impl DockerState {
 
     pub async fn set_connection_mode(state: &State<'_, DockerState>, mode: ConnectionMode) {
         *state.connection_mode.lock().await = mode;
-        if mode == ConnectionMode::Wsl {
+        if mode == ConnectionMode::Wsl || mode == ConnectionMode::Remote {
             *state.connected.lock().await = false;
             *state.docker.lock().await = None;
         }
+    }
+
+    pub async fn selected_remote_profile(
+        state: &State<'_, DockerState>,
+    ) -> Result<RemoteProfile, String> {
+        let config = state.remote_config.lock().await;
+        let Some(selected_id) = config.selected_profile_id.as_ref() else {
+            return Err("No remote profile selected".to_string());
+        };
+        config
+            .profiles
+            .iter()
+            .find(|profile| &profile.id == selected_id)
+            .cloned()
+            .ok_or_else(|| "Selected remote profile not found".to_string())
     }
 }
 

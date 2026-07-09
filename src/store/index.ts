@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { CloseBehavior, ConnectionMode, ConfirmationRequest, DockerInfo, DockerStatus, ExecutionLog, Language, RefreshIntervalMs, ResourceStats, ContainerInfo, ImageInfo, NetworkInfo, VolumeInfo, SidebarTab, ThemeMode, ToastMessage, ToastType } from '../types';
+import { CloseBehavior, ConnectionMode, ConfirmationRequest, DockerInfo, DockerStatus, ExecutionLog, Language, RefreshIntervalMs, ResourceStats, ContainerInfo, ImageInfo, NetworkInfo, RemoteConfig, VolumeInfo, SidebarTab, ThemeMode, ToastMessage, ToastType } from '../types';
 
 let confirmationResolver: ((confirmed: boolean) => void) | null = null;
 
@@ -40,6 +40,12 @@ interface AppState {
   // UI
   activeTab: SidebarTab;
   setActiveTab: (tab: SidebarTab) => void;
+  settingsOpen: boolean;
+  setSettingsOpen: (open: boolean) => void;
+  globalLoadingMessage: string | null;
+  setGlobalLoading: (message: string | null) => void;
+  commandLoading: Record<string, boolean>;
+  setCommandLoading: (command: string, loading: boolean) => void;
   language: Language;
   setLanguage: (language: Language) => void;
   refreshIntervalMs: RefreshIntervalMs;
@@ -48,6 +54,8 @@ interface AppState {
   setThemeMode: (mode: ThemeMode) => void;
   closeBehavior: CloseBehavior | null;
   setCloseBehavior: (behavior: CloseBehavior | null) => void;
+  remoteConfig: RemoteConfig;
+  setRemoteConfig: (config: RemoteConfig) => void;
   executionLogs: ExecutionLog[];
   addExecutionLog: (log: Omit<ExecutionLog, 'id' | 'time'>) => void;
   clearExecutionLogs: () => void;
@@ -106,6 +114,18 @@ export const useAppStore = create<AppState>()(
 
   activeTab: 'dashboard',
   setActiveTab: (tab) => set({ activeTab: tab }),
+  settingsOpen: false,
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
+  globalLoadingMessage: null,
+  setGlobalLoading: (message) => set({ globalLoadingMessage: message }),
+  commandLoading: {},
+  setCommandLoading: (command, loading) =>
+    set((state) => ({
+      commandLoading: {
+        ...state.commandLoading,
+        [command]: loading,
+      },
+    })),
   language: 'system',
   setLanguage: (language) => set({ language }),
   refreshIntervalMs: 10000,
@@ -114,6 +134,8 @@ export const useAppStore = create<AppState>()(
   setThemeMode: (mode) => set({ themeMode: mode }),
   closeBehavior: null,
   setCloseBehavior: (behavior) => set({ closeBehavior: behavior }),
+  remoteConfig: { selectedProfileId: null, profiles: [] },
+  setRemoteConfig: (config) => set({ remoteConfig: config }),
   executionLogs: [],
   addExecutionLog: (log) =>
     set((state) => ({

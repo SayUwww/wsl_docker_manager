@@ -1,11 +1,10 @@
 import {
-  LayoutDashboard, Box, Image, Network, HardDrive, GitBranch, Moon, Sun,
+  LayoutDashboard, Box, Image, Network, HardDrive, GitBranch, Settings,
 } from 'lucide-react';
 import type { ElementType } from 'react';
 import { useAppStore } from '../../store';
 import { SidebarTab } from '../../types';
 import DockerStatusBadge from './DockerStatusBadge';
-import { useDocker } from '../../hooks/useDocker';
 import { translate } from '../../i18n';
 
 const navItems: { id: SidebarTab; icon: ElementType }[] = [
@@ -22,33 +21,9 @@ export default function Sidebar() {
   const containers = useAppStore((s) => s.containers);
   const connectionMode = useAppStore((s) => s.connectionMode);
   const language = useAppStore((s) => s.language);
-  const setLanguage = useAppStore((s) => s.setLanguage);
-  const refreshIntervalMs = useAppStore((s) => s.refreshIntervalMs);
-  const setRefreshIntervalMs = useAppStore((s) => s.setRefreshIntervalMs);
-  const themeMode = useAppStore((s) => s.themeMode);
-  const setThemeMode = useAppStore((s) => s.setThemeMode);
-  const addToast = useAppStore((s) => s.addToast);
-  const { setConnectionMode } = useDocker();
+  const setSettingsOpen = useAppStore((s) => s.setSettingsOpen);
   const runningCount = containers.filter((c) => c.state === 'running').length;
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
-  const handleRefreshIntervalChange = (value: 10000 | 30000 | 60000) => {
-    setRefreshIntervalMs(value);
-    addToast({ type: 'info', title: t('refreshIntervalUpdated'), message: `${value / 1000}s` });
-  };
-  const handleLanguageChange = (value: 'system' | 'zh' | 'ja' | 'en') => {
-    setLanguage(value);
-    addToast({ type: 'info', title: translate(value, 'languageUpdated'), message: value });
-  };
-  const handleConnectionModeToggle = () => {
-    const nextMode = connectionMode === 'wsl' ? 'direct' : 'wsl';
-    setConnectionMode(nextMode);
-    addToast({ type: 'info', title: t('connectionModeSwitched'), message: nextMode.toUpperCase() });
-  };
-  const handleThemeToggle = () => {
-    const nextMode = themeMode === 'dark' ? 'light' : 'dark';
-    setThemeMode(nextMode);
-    addToast({ type: 'info', title: t('themeSwitched'), message: nextMode === 'dark' ? t('dark') : t('light') });
-  };
 
   return (
     <aside className="w-56 flex-shrink-0 bg-zinc-950 border-r border-zinc-800 flex flex-col">
@@ -85,59 +60,27 @@ export default function Sidebar() {
 
       <div className="p-4 border-t border-zinc-800">
         <DockerStatusBadge />
-        <div className="mt-3 space-y-2">
-          <label className="block">
-            <span className="block text-xs text-zinc-500 mb-1">{t('refresh')}</span>
-            <select
-              value={refreshIntervalMs}
-              onChange={(e) => handleRefreshIntervalChange(Number(e.target.value) as 10000 | 30000 | 60000)}
-              className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-indigo-500"
-            >
-              <option value={10000}>10s</option>
-              <option value={30000}>30s</option>
-              <option value={60000}>60s</option>
-            </select>
-          </label>
-          <label className="block">
-            <span className="block text-xs text-zinc-500 mb-1">{t('language')}</span>
-            <select
-              value={language}
-              onChange={(e) => handleLanguageChange(e.target.value as 'system' | 'zh' | 'ja' | 'en')}
-              className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-indigo-500"
-            >
-              <option value="system">{t('system')}</option>
-              <option value="zh">{t('chinese')}</option>
-              <option value="ja">{t('japanese')}</option>
-              <option value="en">{t('english')}</option>
-            </select>
-          </label>
+        <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-900 p-3">
+          <div className="flex items-center justify-between text-xs text-zinc-500">
+            <span className="flex items-center gap-2">
+              <GitBranch size={14} />
+              {t('mode')}
+            </span>
+            <span className="font-mono text-cyan-300 uppercase">{connectionMode}</span>
+          </div>
+          <div className="mt-2 flex items-center justify-between text-xs text-zinc-500">
+            <span>{t('runningContainers')}</span>
+            <span className="text-zinc-300 font-mono font-medium">{runningCount}</span>
+          </div>
         </div>
         <button
-          onClick={handleConnectionModeToggle}
-          className="mt-3 w-full flex items-center justify-between px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-xs text-zinc-300 border border-zinc-800"
-          title={t('toggleConnectionMode')}
+          onClick={() => setSettingsOpen(true)}
+          className="mt-3 w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-xs text-zinc-300 border border-zinc-800"
+          title={t('settings')}
         >
-          <span className="flex items-center gap-2">
-            <GitBranch size={14} className="text-zinc-500" />
-            {t('mode')}
-          </span>
-          <span className="font-mono text-cyan-300 uppercase">{connectionMode}</span>
+          <Settings size={14} className="text-zinc-500" />
+          {t('settings')}
         </button>
-        <button
-          onClick={handleThemeToggle}
-          className="mt-2 w-full flex items-center justify-between px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-xs text-zinc-300 border border-zinc-800"
-          title={t('toggleTheme')}
-        >
-          <span className="flex items-center gap-2">
-            {themeMode === 'dark' ? <Moon size={14} className="text-zinc-500" /> : <Sun size={14} className="text-amber-500" />}
-            {t('theme')}
-          </span>
-          <span className="font-mono text-cyan-300 uppercase">{themeMode === 'dark' ? t('dark') : t('light')}</span>
-        </button>
-        <div className="mt-3 flex items-center justify-between text-xs text-zinc-500">
-          <span>{t('runningContainers')}</span>
-          <span className="text-zinc-300 font-mono font-medium">{runningCount}</span>
-        </div>
       </div>
     </aside>
   );

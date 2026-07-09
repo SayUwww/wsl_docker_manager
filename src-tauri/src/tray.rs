@@ -2,20 +2,22 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, Runtime,
+    Emitter, Manager, Runtime,
 };
 
 pub fn create_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
-    let show = MenuItemBuilder::with_id("show", "Show Window").build(app)?;
-    let start_all = MenuItemBuilder::with_id("start_all", "Start All Containers").build(app)?;
-    let stop_all = MenuItemBuilder::with_id("stop_all", "Stop All Containers").build(app)?;
+    let show = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
+    let hide = MenuItemBuilder::with_id("hide", "隐藏到托盘").build(app)?;
+    let refresh = MenuItemBuilder::with_id("refresh", "刷新数据").build(app)?;
+    let settings = MenuItemBuilder::with_id("settings", "打开设置").build(app)?;
     let separator = tauri::menu::PredefinedMenuItem::separator(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
 
     let menu = MenuBuilder::new(app)
         .item(&show)
-        .item(&start_all)
-        .item(&stop_all)
+        .item(&hide)
+        .item(&refresh)
+        .item(&settings)
         .item(&separator)
         .item(&quit)
         .build()?;
@@ -34,46 +36,20 @@ pub fn create_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
                     let _ = w.set_focus();
                 }
             }
-            "start_all" => {
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Ok(docker) = crate::docker::DockerState::get_docker(
-                        handle.state::<crate::docker::DockerState>(),
-                    )
-                    .await
-                    {
-                        if let Ok(containers) =
-                            crate::docker::list_container_infos(&docker, true).await
-                        {
-                            for c in containers {
-                                if c.state.as_deref() == Some("exited") {
-                                    let _ = docker
-                                        .start_container::<String>(&c.id.unwrap_or_default(), None)
-                                        .await;
-                                }
-                            }
-                        }
-                    }
-                });
+            "hide" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
             }
-            "stop_all" => {
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Ok(docker) = crate::docker::DockerState::get_docker(
-                        handle.state::<crate::docker::DockerState>(),
-                    )
-                    .await
-                    {
-                        if let Ok(containers) =
-                            crate::docker::list_container_infos(&docker, false).await
-                        {
-                            for c in containers {
-                                let _ =
-                                    docker.stop_container(&c.id.unwrap_or_default(), None).await;
-                            }
-                        }
-                    }
-                });
+            "refresh" => {
+                let _ = app.emit("refresh-data", ());
+            }
+            "settings" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+                let _ = app.emit("open-settings", ());
             }
             "quit" => {
                 app.exit(0);

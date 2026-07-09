@@ -1,4 +1,5 @@
 use crate::docker::{self, ConnectionMode, DockerState};
+use crate::remote_docker;
 use crate::wsl_docker;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -23,6 +24,12 @@ pub async fn list_volumes(
 ) -> Result<Vec<VolumeResponse>, String> {
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return list_wsl_volumes(container_ids);
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || list_remote_volumes(profile, container_ids))
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     let docker = DockerState::get_docker(state).await?;
@@ -68,6 +75,13 @@ pub async fn remove_volume(
         return wsl_docker::remove_volume(&name, force)
             .map_err(|e| format!("Failed to remove volume: {}", e));
     }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || remote_docker::remove_volume(&profile, &name, force))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Failed to remove volume: {}", e));
+    }
 
     let docker = DockerState::get_docker(state).await?;
     docker
@@ -80,6 +94,13 @@ pub async fn remove_volume(
 pub async fn prune_volumes(state: State<'_, DockerState>) -> Result<String, String> {
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
         return wsl_docker::prune_volumes().map_err(|e| format!("Failed to prune volumes: {}", e));
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || remote_docker::prune_volumes(&profile))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| format!("Failed to prune volumes: {}", e));
     }
 
     let docker = DockerState::get_docker(state).await?;
@@ -105,6 +126,34 @@ fn list_wsl_volumes(container_ids: Vec<String>) -> Result<Vec<VolumeResponse>, S
         .collect();
 
     Ok(wsl_docker::list_volumes()?
+        .into_iter()
+        .map(|v| {
+            let orphan = !used_volumes.contains(&v.name);
+            let containers = volume_containers.get(&v.name).cloned().unwrap_or_default();
+            VolumeResponse {
+                name: v.name,
+                driver: v.driver,
+                mountpoint: v.mountpoint,
+                scope: v.scope,
+                ref_count: containers.len(),
+                orphan,
+                containers,
+            }
+        })
+        .collect())
+}
+
+fn list_remote_volumes(
+    profile: docker::RemoteProfile,
+    container_ids: Vec<String>,
+) -> Result<Vec<VolumeResponse>, String> {
+    let volume_containers = remote_docker::volume_container_map(&profile)?;
+    let used_volumes: HashSet<String> = container_ids
+        .into_iter()
+        .chain(volume_containers.keys().cloned())
+        .collect();
+
+    Ok(remote_docker::list_volumes(&profile)?
         .into_iter()
         .map(|v| {
             let orphan = !used_volumes.contains(&v.name);

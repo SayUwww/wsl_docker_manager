@@ -77,7 +77,7 @@ export interface ResourceStats {
   diskTotal: number;
 }
 
-export type ConnectionMode = 'wsl' | 'direct';
+export type ConnectionMode = 'wsl' | 'direct' | 'remote';
 export type Language = 'system' | 'zh' | 'ja' | 'en';
 export type RefreshIntervalMs = 10000 | 30000 | 60000;
 
@@ -103,6 +103,25 @@ export interface ToastMessage {
 
 export type ThemeMode = 'dark' | 'light';
 export type CloseBehavior = 'minimize' | 'exit';
+export type RemoteAuthType = 'password' | 'privateKey';
+
+export interface RemoteProfile {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  authType: RemoteAuthType;
+  password?: string | null;
+  privateKeyPath?: string | null;
+  passphrase?: string | null;
+  dockerSocket?: string | null;
+}
+
+export interface RemoteConfig {
+  selectedProfileId: string | null;
+  profiles: RemoteProfile[];
+}
 
 export interface ConfirmationRequest {
   id: string;

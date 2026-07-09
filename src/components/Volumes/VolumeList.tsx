@@ -1,21 +1,21 @@
 import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store';
-import { VolumeInfo } from '../../types';
 import { translate } from '../../i18n';
+import { useDocker } from '../../hooks/useDocker';
 import { Trash2, HardDrive, AlertTriangle, Database, FolderInput, Loader2, RefreshCw } from 'lucide-react';
 
 export default function VolumeList() {
   const volumes = useAppStore((s) => s.volumes);
-  const setVolumes = useAppStore((s) => s.setVolumes);
   const language = useAppStore((s) => s.language);
   const addToast = useAppStore((s) => s.addToast);
   const requestConfirmation = useAppStore((s) => s.requestConfirmation);
+  const isVolumesLoading = useAppStore((s) => Boolean(s.commandLoading.list_volumes));
+  const { refreshVolumes } = useDocker();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [pruning, setPruning] = useState(false);
   const [removingNames, setRemovingNames] = useState<Set<string>>(new Set());
   const [batchRemoving, setBatchRemoving] = useState(false);
-  const [manualRefreshing, setManualRefreshing] = useState(false);
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
 
   const orphanVolumes = volumes.filter((v) => v.orphan);
@@ -31,18 +31,14 @@ export default function VolumeList() {
   };
 
   const handleManualRefresh = useCallback(async () => {
-    setManualRefreshing(true);
-    try {
-      const updated = await invoke<VolumeInfo[]>('list_volumes', { containerIds: [] });
-      setVolumes(updated);
+    if (isVolumesLoading) return;
+    const refreshed = await refreshVolumes();
+    if (refreshed) {
       addToast({ type: 'success', title: t('refreshCompleted'), message: t('volumes') });
-    } catch (e) {
-      console.error(e);
-      addToast({ type: 'error', title: t('refreshFailed'), message: String(e) });
-    } finally {
-      setManualRefreshing(false);
+    } else {
+      addToast({ type: 'info', title: t('refreshing'), message: t('volumes') });
     }
-  }, [addToast, setVolumes, t]);
+  }, [addToast, isVolumesLoading, refreshVolumes, t]);
 
   const handleRemove = useCallback(async (name: string) => {
     const confirmed = await requestConfirmation({
@@ -56,8 +52,7 @@ export default function VolumeList() {
     setRemovingNames((prev) => new Set(prev).add(name));
     try {
       await invoke('remove_volume', { name, force: false });
-      const updated = await invoke<VolumeInfo[]>('list_volumes', { containerIds: [] });
-      setVolumes(updated);
+      await refreshVolumes();
       addToast({ type: 'success', title: t('volumeRemoved'), message: name });
     } catch (e) {
       console.error(e);
@@ -69,7 +64,7 @@ export default function VolumeList() {
         return next;
       });
     }
-  }, [addToast, requestConfirmation, setVolumes, t]);
+  }, [addToast, refreshVolumes, requestConfirmation, t]);
 
   const handlePrune = useCallback(async () => {
     const confirmed = await requestConfirmation({
@@ -83,8 +78,7 @@ export default function VolumeList() {
     setPruning(true);
     try {
       await invoke('prune_volumes');
-      const updated = await invoke<VolumeInfo[]>('list_volumes', { containerIds: [] });
-      setVolumes(updated);
+      await refreshVolumes();
       addToast({ type: 'success', title: t('orphanVolumesPruned') });
     } catch (e) {
       console.error(e);
@@ -92,7 +86,7 @@ export default function VolumeList() {
     } finally {
       setPruning(false);
     }
-  }, [addToast, requestConfirmation, setVolumes, t]);
+  }, [addToast, refreshVolumes, requestConfirmation, t]);
 
   const handleBatchRemove = useCallback(async () => {
     const confirmed = await requestConfirmation({
@@ -115,8 +109,7 @@ export default function VolumeList() {
         }
       }
       setSelectedIds(new Set());
-      const updated = await invoke<VolumeInfo[]>('list_volumes', { containerIds: [] });
-      setVolumes(updated);
+      await refreshVolumes();
       if (errors.length > 0) {
         addToast({ type: 'error', title: t('removeVolumesFailed'), message: errors.join('; ') });
       } else {
@@ -128,7 +121,7 @@ export default function VolumeList() {
     } finally {
       setBatchRemoving(false);
     }
-  }, [addToast, requestConfirmation, selectedIds, setVolumes, t]);
+  }, [addToast, refreshVolumes, requestConfirmation, selectedIds, t]);
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -145,12 +138,12 @@ export default function VolumeList() {
               <button
                 type="button"
                 onClick={handleManualRefresh}
-                disabled={manualRefreshing}
+                disabled={isVolumesLoading}
                 className="btn-secondary text-xs"
                 title={t('refresh')}
               >
-                <RefreshCw size={14} className={`mr-1 ${manualRefreshing ? 'animate-spin' : ''}`} />
-                {manualRefreshing ? t('refreshing') : t('refresh')}
+                <RefreshCw size={14} className={`mr-1 ${isVolumesLoading ? 'animate-spin' : ''}`} />
+                {isVolumesLoading ? t('refreshing') : t('refresh')}
               </button>
               {selectedIds.size > 0 && (
                 <button onClick={handleBatchRemove} disabled={batchRemoving} className="btn-danger text-xs">
@@ -273,7 +266,7 @@ export default function VolumeList() {
             </tbody>
           </table>
           {volumes.length === 0 && (
-            <div className="py-16 text-center text-zinc-500 text-sm">{t('noVolumes')}</div>
+            <div className="py-16 text-center text-zinc-500 text-sm">{isVolumesLoading ? t('loadingData') : t('noVolumes')}</div>
           )}
         </div>
       </div>

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store';
 import { ImageInfo } from '../../types';
 import { translate } from '../../i18n';
+import { useDocker } from '../../hooks/useDocker';
 import {
   AlertTriangle,
   ChevronDown,
@@ -36,15 +37,15 @@ function formatDate(ts: string): string {
 
 export default function ImageList() {
   const images = useAppStore((s) => s.images);
-  const setImages = useAppStore((s) => s.setImages);
   const language = useAppStore((s) => s.language);
   const addToast = useAppStore((s) => s.addToast);
   const requestConfirmation = useAppStore((s) => s.requestConfirmation);
+  const isImagesLoading = useAppStore((s) => Boolean(s.commandLoading.list_images));
+  const { refreshImages } = useDocker();
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [pruning, setPruning] = useState(false);
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
   const [batchRemoving, setBatchRemoving] = useState(false);
-  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [collapsedImageIds, setCollapsedImageIds] = useState<Set<string>>(new Set());
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
 
@@ -86,18 +87,14 @@ export default function ImageList() {
   };
 
   const handleManualRefresh = useCallback(async () => {
-    setManualRefreshing(true);
-    try {
-      const updated = await invoke<ImageInfo[]>('list_images');
-      setImages(updated);
+    if (isImagesLoading) return;
+    const refreshed = await refreshImages();
+    if (refreshed) {
       addToast({ type: 'success', title: t('refreshCompleted'), message: t('images') });
-    } catch (e) {
-      console.error(e);
-      addToast({ type: 'error', title: t('refreshFailed'), message: String(e) });
-    } finally {
-      setManualRefreshing(false);
+    } else {
+      addToast({ type: 'info', title: t('refreshing'), message: t('images') });
     }
-  }, [addToast, setImages, t]);
+  }, [addToast, isImagesLoading, refreshImages, t]);
 
   const getDeleteOrder = useCallback((id: string): ImageInfo[] => {
     const visit = (currentId: string, visited: Set<string>): ImageInfo[] => {
@@ -140,8 +137,7 @@ export default function ImageList() {
           break;
         }
       }
-      const updated = await invoke<ImageInfo[]>('list_images');
-      setImages(updated);
+      await refreshImages();
       if (errors.length > 0) {
         addToast({ type: 'error', title: t('removeImageFailed'), message: errors.join('; ') });
       } else {
@@ -157,7 +153,7 @@ export default function ImageList() {
         return next;
       });
     }
-  }, [addToast, getDeleteOrder, requestConfirmation, setImages, t]);
+  }, [addToast, getDeleteOrder, refreshImages, requestConfirmation, t]);
 
   const handlePrune = useCallback(async () => {
     const confirmed = await requestConfirmation({
@@ -171,8 +167,7 @@ export default function ImageList() {
     setPruning(true);
     try {
       await invoke<string>('prune_images');
-      const updated = await invoke<ImageInfo[]>('list_images');
-      setImages(updated);
+      await refreshImages();
       addToast({ type: 'success', title: t('danglingImagesPruned') });
     } catch (e) {
       console.error(e);
@@ -180,7 +175,7 @@ export default function ImageList() {
     } finally {
       setPruning(false);
     }
-  }, [addToast, requestConfirmation, setImages, t]);
+  }, [addToast, refreshImages, requestConfirmation, t]);
 
   const handleBatchRemove = useCallback(async () => {
     const deleteOrder = selectedIds.size > 0
@@ -209,8 +204,7 @@ export default function ImageList() {
         }
       }
       setSelectedIds(new Set());
-      const updated = await invoke<ImageInfo[]>('list_images');
-      setImages(updated);
+      await refreshImages();
       if (errors.length > 0) {
         addToast({ type: 'error', title: t('removeImageFailed'), message: errors.join('; ') });
       } else {
@@ -227,7 +221,7 @@ export default function ImageList() {
         return next;
       });
     }
-  }, [addToast, getDeleteOrder, requestConfirmation, selectedIds, setImages, t]);
+  }, [addToast, getDeleteOrder, refreshImages, requestConfirmation, selectedIds, t]);
 
   const renderImageRows = (img: ImageInfo, depth = 0, visited = new Set<string>()): ReactNode[] => {
     const imageKey = normalizeImageId(img.id);
@@ -328,12 +322,12 @@ export default function ImageList() {
               <button
                 type="button"
                 onClick={handleManualRefresh}
-                disabled={manualRefreshing}
+                disabled={isImagesLoading}
                 className="btn-secondary text-xs"
                 title={t('refresh')}
               >
-                <RefreshCw size={14} className={`mr-1 ${manualRefreshing ? 'animate-spin' : ''}`} />
-                {manualRefreshing ? t('refreshing') : t('refresh')}
+                <RefreshCw size={14} className={`mr-1 ${isImagesLoading ? 'animate-spin' : ''}`} />
+                {isImagesLoading ? t('refreshing') : t('refresh')}
               </button>
               {selectedIds.size > 0 && (
                 <button onClick={handleBatchRemove} disabled={batchRemoving} className="btn-danger text-xs">
@@ -415,7 +409,7 @@ export default function ImageList() {
             </tbody>
           </table>
           {images.length === 0 && (
-            <div className="py-16 text-center text-sm text-zinc-500">{t('noImages')}</div>
+            <div className="py-16 text-center text-sm text-zinc-500">{isImagesLoading ? t('loadingData') : t('noImages')}</div>
           )}
         </div>
       </div>

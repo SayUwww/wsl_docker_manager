@@ -5,6 +5,7 @@ import { useAppStore } from '../../store';
 import { ContainerInfo } from '../../types';
 import { translate } from '../../i18n';
 import { describeDockerCommand } from '../../utils/executionLog';
+import { useDocker } from '../../hooks/useDocker';
 import {
   Play, Square, RotateCcw, Trash2, Terminal, ScrollText,
   Search, ExternalLink, FolderOpen, Loader2, Pencil,
@@ -22,9 +23,13 @@ export default function ContainerList() {
   const addExecutionLog = useAppStore((s) => s.addExecutionLog);
   const addToast = useAppStore((s) => s.addToast);
   const requestConfirmation = useAppStore((s) => s.requestConfirmation);
+  const isContainersLoading = useAppStore((s) => Boolean(s.commandLoading.list_containers));
+  const { refreshContainers } = useDocker();
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [groupFilter, setGroupFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [editingGroup, setEditingGroup] = useState<string | null>(null);
   const [groupValue, setGroupValue] = useState('');
   const [batchGroupValue, setBatchGroupValue] = useState('');
@@ -36,10 +41,19 @@ export default function ContainerList() {
   const [openUrlMenu, setOpenUrlMenu] = useState<string | null>(null);
   const [pendingActions, setPendingActions] = useState<Set<string>>(new Set());
   const [pendingBatchAction, setPendingBatchAction] = useState<string | null>(null);
-  const [manualRefreshing, setManualRefreshing] = useState(false);
+  const groupOptions = Array.from(new Set(containers.map((c) => c.group?.trim() || '__ungrouped__'))).sort((a, b) => {
+    if (a === '__ungrouped__') return 1;
+    if (b === '__ungrouped__') return -1;
+    return a.localeCompare(b);
+  });
 
   const filtered = containers.filter((c) => {
     if (searchTerm && !c.name.toLowerCase().includes(searchTerm.toLowerCase()) && !c.image.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+    const normalizedGroup = c.group?.trim() || '__ungrouped__';
+    if (groupFilter !== 'all' && normalizedGroup !== groupFilter) return false;
+    if (statusFilter === 'running' && c.state !== 'running') return false;
+    if (statusFilter === 'stopped' && c.state === 'running') return false;
+    if (statusFilter === 'paused' && c.state !== 'paused') return false;
     return true;
   });
   const grouped = filtered.reduce<Record<string, ContainerInfo[]>>((acc, container) => {
@@ -67,10 +81,7 @@ export default function ContainerList() {
     }
   }, [addExecutionLog]);
 
-  const refreshContainers = useCallback(async () => {
-    const updated = await runInvoke<ContainerInfo[]>('list_containers', { all: true });
-    useAppStore.getState().setContainers(updated);
-  }, [runInvoke]);
+  const refreshContainerList = useCallback(() => refreshContainers(true), [refreshContainers]);
 
   const handleSelectAllFiltered = useCallback((checked: boolean) => {
     if (checked) {
@@ -81,17 +92,14 @@ export default function ContainerList() {
   }, [clearContainerSelection, filtered]);
 
   const handleManualRefresh = useCallback(async () => {
-    setManualRefreshing(true);
-    try {
-      await refreshContainers();
+    if (isContainersLoading) return;
+    const refreshed = await refreshContainerList();
+    if (refreshed) {
       addToast({ type: 'success', title: t('refreshCompleted'), message: t('containers') });
-    } catch (e) {
-      console.error(e);
-      addToast({ type: 'error', title: t('refreshFailed'), message: String(e) });
-    } finally {
-      setManualRefreshing(false);
+    } else {
+      addToast({ type: 'info', title: t('refreshing'), message: t('containers') });
     }
-  }, [addToast, refreshContainers, t]);
+  }, [addToast, isContainersLoading, refreshContainerList, t]);
 
   const handleBatch = useCallback(async (action: string) => {
     if (action === 'remove') {
@@ -108,7 +116,7 @@ export default function ContainerList() {
     try {
       await runInvoke(`batch_${action}_containers`, action === 'remove' ? { ids: selectedIds, force: true } : { ids: selectedIds });
       clearContainerSelection();
-      await refreshContainers();
+      await refreshContainerList();
       addToast({
         type: 'success',
         title: `${containerActionLabel(action, t)} ${t('completed')}`,
@@ -124,7 +132,7 @@ export default function ContainerList() {
     } finally {
       setPendingBatchAction(null);
     }
-  }, [addToast, selectedIds, clearContainerSelection, refreshContainers, requestConfirmation, runInvoke, t]);
+  }, [addToast, selectedIds, clearContainerSelection, refreshContainerList, requestConfirmation, runInvoke, t]);
 
   const handleSingleAction = useCallback(async (action: string, id: string) => {
     const key = `${action}:${id}`;
@@ -132,7 +140,7 @@ export default function ContainerList() {
     setPendingActions((prev) => new Set(prev).add(key));
     try {
       await runInvoke(`${action}_container`, { id });
-      await refreshContainers();
+      await refreshContainerList();
       addToast({
         type: 'success',
         title: `${containerActionLabel(action, t)} ${t('completed')}`,
@@ -152,7 +160,7 @@ export default function ContainerList() {
         return next;
       });
     }
-  }, [addToast, containers, refreshContainers, runInvoke, t]);
+  }, [addToast, containers, refreshContainerList, runInvoke, t]);
 
   const saveGroup = useCallback(async (id: string) => {
     if (savingGroupId === id) return;
@@ -160,7 +168,7 @@ export default function ContainerList() {
     setSavingGroupId(id);
     try {
       await runInvoke('update_container_meta', { id, group: groupValue, urls: null });
-      await refreshContainers();
+      await refreshContainerList();
       addToast({ type: 'success', title: t('groupSaved'), message: container?.name });
     } catch (e) {
       console.error(e);
@@ -172,7 +180,7 @@ export default function ContainerList() {
     }
     setSavingGroupId(null);
     setEditingGroup(null);
-  }, [addToast, containers, groupValue, savingGroupId, refreshContainers, runInvoke, t]);
+  }, [addToast, containers, groupValue, savingGroupId, refreshContainerList, runInvoke, t]);
 
   const saveBatchGroup = useCallback(async () => {
     setPendingBatchAction('group');
@@ -183,7 +191,7 @@ export default function ContainerList() {
       clearContainerSelection();
       setBatchGroupValue('');
       setShowBatchGroup(false);
-      await refreshContainers();
+      await refreshContainerList();
       addToast({ type: 'success', title: t('groupsSaved'), message: `${selectedIds.length} ${t('containers')}` });
     } catch (e) {
       console.error(e);
@@ -191,7 +199,7 @@ export default function ContainerList() {
     } finally {
       setPendingBatchAction(null);
     }
-  }, [addToast, selectedIds, batchGroupValue, clearContainerSelection, refreshContainers, runInvoke, t]);
+  }, [addToast, selectedIds, batchGroupValue, clearContainerSelection, refreshContainerList, runInvoke, t]);
 
   const saveUrl = useCallback(async (id: string, existingUrls: string[] | undefined) => {
     const nextUrl = normalizeUrl(urlValue);
@@ -208,7 +216,7 @@ export default function ContainerList() {
     const container = containers.find((item) => item.id === id);
     try {
       await runInvoke('update_container_meta', { id, group: null, urls: Array.from(new Set(urls)) });
-      await refreshContainers();
+      await refreshContainerList();
       addToast({ type: 'success', title: editingOriginalUrl ? t('urlUpdated') : t('urlAdded'), message: container?.name });
     } catch (e) {
       console.error(e);
@@ -221,7 +229,7 @@ export default function ContainerList() {
     setEditingUrl(null);
     setEditingOriginalUrl(null);
     setUrlValue('');
-  }, [addToast, containers, urlValue, editingOriginalUrl, refreshContainers, runInvoke, t]);
+  }, [addToast, containers, urlValue, editingOriginalUrl, refreshContainerList, runInvoke, t]);
 
   const deleteUrl = useCallback(async (id: string, existingUrls: string[] | undefined, urlToDelete: string) => {
     const confirmed = await requestConfirmation({
@@ -236,7 +244,7 @@ export default function ContainerList() {
     const container = containers.find((item) => item.id === id);
     try {
       await runInvoke('update_container_meta', { id, group: null, urls });
-      await refreshContainers();
+      await refreshContainerList();
       setOpenUrlMenu(null);
       setEditingUrl(null);
       setEditingOriginalUrl(null);
@@ -250,7 +258,7 @@ export default function ContainerList() {
         message: `${container?.name ? `${container.name}: ` : ''}${String(e)}`,
       });
     }
-  }, [addToast, containers, refreshContainers, requestConfirmation, runInvoke, t]);
+  }, [addToast, containers, refreshContainerList, requestConfirmation, runInvoke, t]);
 
   const openExternalUrl = useCallback(async (url: string) => {
     try {
@@ -329,12 +337,12 @@ export default function ContainerList() {
             <button
               type="button"
               onClick={handleManualRefresh}
-              disabled={manualRefreshing}
+              disabled={isContainersLoading}
               className="btn-secondary text-xs"
               title={t('refresh')}
             >
-              <RefreshCw size={14} className={`mr-1 ${manualRefreshing ? 'animate-spin' : ''}`} />
-              {manualRefreshing ? t('refreshing') : t('refresh')}
+              <RefreshCw size={14} className={`mr-1 ${isContainersLoading ? 'animate-spin' : ''}`} />
+              {isContainersLoading ? t('refreshing') : t('refresh')}
             </button>
           </div>
         </header>
@@ -349,6 +357,32 @@ export default function ContainerList() {
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
+
+          <select
+            className="input w-44 text-xs"
+            value={groupFilter}
+            onChange={(e) => setGroupFilter(e.target.value)}
+            title={t('filterByGroup')}
+          >
+            <option value="all">{t('allGroups')}</option>
+            {groupOptions.map((group) => (
+              <option key={group} value={group}>
+                {group === '__ungrouped__' ? t('ungrouped') : group}
+              </option>
+            ))}
+          </select>
+
+          <select
+            className="input w-40 text-xs"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            title={t('filterByStatus')}
+          >
+            <option value="all">{t('allStatuses')}</option>
+            <option value="running">{t('running')}</option>
+            <option value="stopped">{t('stopped')}</option>
+            <option value="paused">{t('paused')}</option>
+          </select>
 
           {selectedIds.length > 0 && (
             <div className="flex items-center gap-1.5">
@@ -391,6 +425,13 @@ export default function ContainerList() {
             </div>
           )}
         </div>
+
+        {isContainersLoading && (
+          <div className="mt-3 flex items-center gap-2 rounded-md border border-indigo-500/20 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-300">
+            <Loader2 size={14} className="animate-spin" />
+            {t('loadingData')}
+          </div>
+        )}
 
         <div className="card mt-4 overflow-hidden rounded-b-none border-b-0">
           <table className="w-full table-fixed text-sm">
@@ -602,7 +643,7 @@ export default function ContainerList() {
           </table>
           {filtered.length === 0 && (
             <div className="py-16 text-center text-zinc-500 text-sm">
-              {t('noContainers')}
+              {isContainersLoading ? t('loadingData') : t('noContainers')}
             </div>
           )}
         </div>
