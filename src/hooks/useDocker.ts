@@ -151,7 +151,6 @@ export function useDocker() {
     refreshVolumes();
 
     intervalRef.current = setInterval(() => {
-      refreshDockerStatus();
       refreshResourceStats();
     }, refreshIntervalMs);
   }, [refreshConnectionMode, refreshDockerStatus, refreshResourceStats, refreshContainers, refreshImages, refreshNetworks, refreshVolumes, refreshIntervalMs]);

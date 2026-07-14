@@ -1,11 +1,11 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/core/tauri-config-schema/schema.json",
   "productName": "WSL Docker Manager",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "identifier": "com.wsl-docker-manager.app",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1445",
+    "devUrl": "http://localhost:4173",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },

@@ -227,7 +227,7 @@ export default function SettingsDialog() {
                     <option value="remote">{t('remoteServer')}</option>
                   </select>
                 </Field>
-                <Field label={t('refresh')}>
+                <Field label={t('resourceRefreshInterval')}>
                   <select className="input" value={refreshIntervalMs} onChange={(event) => setRefreshIntervalMs(Number(event.target.value) as RefreshIntervalMs)}>
                     <option value={10000}>10s</option>
                     <option value={30000}>30s</option>

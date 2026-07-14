@@ -144,7 +144,11 @@ pub async fn save_remote_profile(
 ) -> Result<RemoteConfigResponse, String> {
     {
         let mut config = state.remote_config.lock().await;
-        if let Some(existing) = config.profiles.iter_mut().find(|item| item.id == profile.id) {
+        if let Some(existing) = config
+            .profiles
+            .iter_mut()
+            .find(|item| item.id == profile.id)
+        {
             *existing = profile.clone();
         } else {
             config.profiles.push(profile.clone());
@@ -190,7 +194,9 @@ pub async fn select_remote_profile(
 }
 
 #[tauri::command]
-pub async fn test_remote_profile(profile: docker::RemoteProfile) -> Result<RemoteTestResponse, String> {
+pub async fn test_remote_profile(
+    profile: docker::RemoteProfile,
+) -> Result<RemoteTestResponse, String> {
     let message = tokio::task::spawn_blocking(move || remote_docker::test_connection(&profile))
         .await
         .map_err(|e| e.to_string())??;

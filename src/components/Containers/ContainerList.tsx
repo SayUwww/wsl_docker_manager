@@ -1,4 +1,4 @@
-import { Fragment, useState, useCallback, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openPath } from '@tauri-apps/plugin-shell';
 import { useAppStore } from '../../store';
@@ -19,17 +19,20 @@ export default function ContainerList() {
   const clearContainerSelection = useAppStore((s) => s.clearContainerSelection);
   const setLogContainer = useAppStore((s) => s.setLogContainer);
   const setTerminalContainer = useAppStore((s) => s.setTerminalContainer);
+  const searchTerm = useAppStore((s) => s.containerSearchTerm);
+  const setSearchTerm = useAppStore((s) => s.setContainerSearchTerm);
+  const groupFilter = useAppStore((s) => s.containerGroupFilter);
+  const setGroupFilter = useAppStore((s) => s.setContainerGroupFilter);
+  const statusFilter = useAppStore((s) => s.containerStatusFilter);
+  const setStatusFilter = useAppStore((s) => s.setContainerStatusFilter);
   const language = useAppStore((s) => s.language);
   const addExecutionLog = useAppStore((s) => s.addExecutionLog);
   const addToast = useAppStore((s) => s.addToast);
   const requestConfirmation = useAppStore((s) => s.requestConfirmation);
   const isContainersLoading = useAppStore((s) => Boolean(s.commandLoading.list_containers));
-  const { refreshContainers } = useDocker();
+  const { refreshContainers, refreshDockerStatus } = useDocker();
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
 
-  const [searchTerm, setSearchTerm] = useState('');
-  const [groupFilter, setGroupFilter] = useState('all');
-  const [statusFilter, setStatusFilter] = useState('all');
   const [editingGroup, setEditingGroup] = useState<string | null>(null);
   const [groupValue, setGroupValue] = useState('');
   const [batchGroupValue, setBatchGroupValue] = useState('');
@@ -67,6 +70,9 @@ export default function ContainerList() {
     if (b === t('ungrouped')) return -1;
     return a.localeCompare(b);
   });
+  const lastVisibleContainerId = groupNames.length > 0
+    ? grouped[groupNames[groupNames.length - 1]]?.[grouped[groupNames[groupNames.length - 1]].length - 1]?.id
+    : undefined;
 
   const selectedIds = Array.from(selectedContainers);
   const runInvoke = useCallback(async <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
@@ -82,6 +88,13 @@ export default function ContainerList() {
   }, [addExecutionLog]);
 
   const refreshContainerList = useCallback(() => refreshContainers(true), [refreshContainers]);
+  const emptyRefreshAttemptedRef = useRef(false);
+
+  useEffect(() => {
+    if (emptyRefreshAttemptedRef.current || containers.length > 0 || isContainersLoading) return;
+    emptyRefreshAttemptedRef.current = true;
+    void refreshContainerList();
+  }, [containers.length, isContainersLoading, refreshContainerList]);
 
   const handleSelectAllFiltered = useCallback((checked: boolean) => {
     if (checked) {
@@ -116,7 +129,7 @@ export default function ContainerList() {
     try {
       await runInvoke(`batch_${action}_containers`, action === 'remove' ? { ids: selectedIds, force: true } : { ids: selectedIds });
       clearContainerSelection();
-      await refreshContainerList();
+      await Promise.all([refreshContainerList(), refreshDockerStatus()]);
       addToast({
         type: 'success',
         title: `${containerActionLabel(action, t)} ${t('completed')}`,
@@ -132,7 +145,7 @@ export default function ContainerList() {
     } finally {
       setPendingBatchAction(null);
     }
-  }, [addToast, selectedIds, clearContainerSelection, refreshContainerList, requestConfirmation, runInvoke, t]);
+  }, [addToast, selectedIds, clearContainerSelection, refreshContainerList, refreshDockerStatus, requestConfirmation, runInvoke, t]);
 
   const handleSingleAction = useCallback(async (action: string, id: string) => {
     const key = `${action}:${id}`;
@@ -140,7 +153,7 @@ export default function ContainerList() {
     setPendingActions((prev) => new Set(prev).add(key));
     try {
       await runInvoke(`${action}_container`, { id });
-      await refreshContainerList();
+      await Promise.all([refreshContainerList(), refreshDockerStatus()]);
       addToast({
         type: 'success',
         title: `${containerActionLabel(action, t)} ${t('completed')}`,
@@ -160,7 +173,7 @@ export default function ContainerList() {
         return next;
       });
     }
-  }, [addToast, containers, refreshContainerList, runInvoke, t]);
+  }, [addToast, containers, refreshContainerList, refreshDockerStatus, runInvoke, t]);
 
   const saveGroup = useCallback(async (id: string) => {
     if (savingGroupId === id) return;
@@ -442,7 +455,7 @@ export default function ContainerList() {
       </div>
 
       {/* Table */}
-      <div className="card overflow-hidden rounded-t-none">
+      <div className="card relative z-30 overflow-visible rounded-t-none">
         <div>
           <table className="w-full table-fixed text-sm">
             {renderTableColGroup()}
@@ -566,7 +579,9 @@ export default function ContainerList() {
                             {c.urls.length > 1 && <span className="text-[10px] leading-none">{c.urls.length}</span>}
                           </button>
                           {openUrlMenu === c.id && (
-                            <div className="absolute right-0 top-full mt-1 z-20 w-72 rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-xl">
+                            <div className={`absolute right-0 z-[80] w-72 rounded-lg border border-zinc-700 bg-zinc-900 p-1 shadow-xl ${
+                              c.id === lastVisibleContainerId ? 'bottom-full mb-1' : 'top-full mt-1'
+                            }`}>
                               {c.urls.map((url) => (
                                 <div
                                   key={url}
@@ -612,7 +627,9 @@ export default function ContainerList() {
                         +
                       </button>
                       {editingUrl === c.id && (
-                        <div className="absolute right-0 top-full mt-1 z-10 bg-zinc-800 border border-zinc-700 rounded-lg p-2 shadow-xl">
+                        <div className={`absolute right-0 z-[80] bg-zinc-800 border border-zinc-700 rounded-lg p-2 shadow-xl ${
+                          c.id === lastVisibleContainerId ? 'bottom-full mb-1' : 'top-full mt-1'
+                        }`}>
                           <input
                             className="input text-xs py-1 w-48"
                             placeholder="https://..."

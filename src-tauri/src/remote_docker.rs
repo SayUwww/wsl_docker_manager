@@ -1,4 +1,7 @@
-use crate::docker::{RemoteAuthType, RemoteProfile};
+use crate::docker::{
+    emit_terminal_output, image_container_counts, normalize_image_id, RemoteAuthType,
+    RemoteProfile, TerminalOutputEvent,
+};
 use crate::wsl_docker::{
     Container, Image, ImageContainerRef, Info, Network, NetworkAttachment, ResourceStats, Stats,
     Volume,
@@ -10,6 +13,7 @@ use std::io::Read;
 use std::net::TcpStream;
 use std::path::Path;
 use std::time::Duration;
+use tauri::ipc::Channel;
 
 const REMOTE_COMMAND_TIMEOUT_SECONDS: u64 = 25;
 
@@ -40,7 +44,6 @@ struct RemoteImageRow {
     digest: String,
     created_at: String,
     size: String,
-    containers: String,
 }
 
 #[derive(Deserialize)]
@@ -48,8 +51,18 @@ struct RemoteImageRow {
 struct RemoteContainerInspect {
     id: String,
     name: String,
+    #[serde(default)]
+    image: String,
+    state: Option<RemoteContainerState>,
     mounts: Option<Vec<RemoteMount>>,
     network_settings: Option<RemoteNetworkSettings>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct RemoteContainerState {
+    #[serde(default)]
+    status: String,
 }
 
 #[derive(Deserialize)]
@@ -144,8 +157,7 @@ disk_total=$(df -B1 / | awk 'NR == 2 {print $2}')
 disk_used=$(df -B1 / | awk 'NR == 2 {print $3}')
 printf '{"cpu_percent":%s,"mem_used":%s,"mem_total":%s,"disk_used":%s,"disk_total":%s}' "$cpu" "$mem_used" "$mem_total" "$disk_used" "$disk_total""#,
     )?;
-    serde_json::from_str(&output)
-        .map_err(|e| format!("Failed to parse remote resources: {}", e))
+    serde_json::from_str(&output).map_err(|e| format!("Failed to parse remote resources: {}", e))
 }
 
 pub fn list_images(profile: &RemoteProfile) -> Result<Vec<Image>, String> {
@@ -156,6 +168,9 @@ pub fn list_images(profile: &RemoteProfile) -> Result<Vec<Image>, String> {
     if output.trim().is_empty() {
         return Ok(Vec::new());
     }
+    let containers = inspect_containers(profile)?;
+    let container_counts =
+        image_container_counts(containers.iter().map(|container| container.image.as_str()));
 
     output
         .lines()
@@ -163,6 +178,10 @@ pub fn list_images(profile: &RemoteProfile) -> Result<Vec<Image>, String> {
             let row: RemoteImageRow = serde_json::from_str(line)
                 .map_err(|e| format!("Failed to parse remote image: {}", e))?;
             let parent_id = inspect_image_parent(profile, &row.id).unwrap_or_default();
+            let containers = container_counts
+                .get(normalize_image_id(&row.id))
+                .copied()
+                .unwrap_or(0);
             Ok(Image {
                 id: row.id,
                 parent_id,
@@ -171,7 +190,8 @@ pub fn list_images(profile: &RemoteProfile) -> Result<Vec<Image>, String> {
                 digest: row.digest,
                 created_at: row.created_at,
                 size: row.size,
-                containers: row.containers,
+                shared_size: -1,
+                containers: containers.to_string(),
             })
         })
         .collect()
@@ -192,8 +212,7 @@ pub fn inspect_networks(profile: &RemoteProfile) -> Result<Vec<Network>, String>
         profile,
         "ids=$(docker network ls -q); [ -z \"$ids\" ] && printf '[]' || docker network inspect $ids",
     )?;
-    serde_json::from_str(&output)
-        .map_err(|e| format!("Failed to parse remote networks: {}", e))
+    serde_json::from_str(&output).map_err(|e| format!("Failed to parse remote networks: {}", e))
 }
 
 pub fn list_volumes(profile: &RemoteProfile) -> Result<Vec<Volume>, String> {
@@ -201,11 +220,12 @@ pub fn list_volumes(profile: &RemoteProfile) -> Result<Vec<Volume>, String> {
         profile,
         "ids=$(docker volume ls -q); [ -z \"$ids\" ] && printf '[]' || docker volume inspect $ids",
     )?;
-    serde_json::from_str(&output)
-        .map_err(|e| format!("Failed to parse remote volumes: {}", e))
+    serde_json::from_str(&output).map_err(|e| format!("Failed to parse remote volumes: {}", e))
 }
 
-pub fn volume_container_map(profile: &RemoteProfile) -> Result<HashMap<String, Vec<String>>, String> {
+pub fn volume_container_map(
+    profile: &RemoteProfile,
+) -> Result<HashMap<String, Vec<String>>, String> {
     let containers = inspect_containers(profile)?;
     let mut owners: HashMap<String, Vec<String>> = HashMap::new();
     for container in containers {
@@ -278,7 +298,11 @@ pub fn remove_container(profile: &RemoteProfile, id: &str, force: bool) -> Resul
     docker_status(profile, &format!("docker rm {}{}", flag, sh_quote(id)))
 }
 
-pub fn container_logs(profile: &RemoteProfile, id: &str, tail: usize) -> Result<Vec<String>, String> {
+pub fn container_logs(
+    profile: &RemoteProfile,
+    id: &str,
+    tail: usize,
+) -> Result<Vec<String>, String> {
     let output = docker_output(
         profile,
         &format!(
@@ -290,37 +314,81 @@ pub fn container_logs(profile: &RemoteProfile, id: &str, tail: usize) -> Result<
     Ok(output.lines().map(ToOwned::to_owned).collect())
 }
 
-pub fn exec_container(profile: &RemoteProfile, id: &str, cmd: &[String]) -> Result<String, String> {
-    if cmd.is_empty() {
+pub fn exec_container_stream(
+    profile: &RemoteProfile,
+    id: &str,
+    command: &str,
+    on_event: Channel<TerminalOutputEvent>,
+) -> Result<(), String> {
+    if command.trim().is_empty() {
         return Err("Command is empty".to_string());
     }
-    let quoted_cmd = cmd.iter().map(|part| sh_quote(part)).collect::<Vec<_>>().join(" ");
-    docker_output(profile, &format!("docker exec {} {}", sh_quote(id), quoted_cmd))
+
+    let remote_command = format!(
+        "{}docker exec {} sh -lc {} 2>&1",
+        docker_host_prefix(profile),
+        sh_quote(id),
+        sh_quote(command)
+    );
+    let mut channel = connect_without_timeout(profile)?
+        .channel_session()
+        .map_err(|e| e.to_string())?;
+    channel.exec(&remote_command).map_err(|e| e.to_string())?;
+
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let count = channel
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed to read remote command output: {}", e))?;
+        if count == 0 {
+            break;
+        }
+        emit_terminal_output(
+            &on_event,
+            "stdout",
+            String::from_utf8_lossy(&buffer[..count]).into_owned(),
+        );
+    }
+
+    channel.wait_close().map_err(|e| e.to_string())?;
+    let status = channel.exit_status().map_err(|e| e.to_string())?;
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(format!("Command exited with code {}", status))
+    }
 }
 
 pub fn remove_image(profile: &RemoteProfile, id: &str, force: bool) -> Result<String, String> {
     let flag = if force { "-f " } else { "" };
-    docker_output(profile, &format!("docker image rm {}{}", flag, sh_quote(id)))
+    docker_output(
+        profile,
+        &format!("docker image rm {}{}", flag, sh_quote(id)),
+    )
 }
 
-pub fn image_containers(profile: &RemoteProfile, id: &str) -> Result<Vec<ImageContainerRef>, String> {
-    let output = docker_output(
-        profile,
-        &format!(
-            "docker ps -a --no-trunc --filter ancestor={} --format '{{{{json .}}}}'",
-            sh_quote(id)
-        ),
-    )?;
-    if output.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    output
-        .lines()
-        .map(|line| {
-            serde_json::from_str(line)
-                .map_err(|e| format!("Failed to parse remote image container: {}", e))
+pub fn image_containers(
+    profile: &RemoteProfile,
+    id: &str,
+) -> Result<Vec<ImageContainerRef>, String> {
+    let target_id = normalize_image_id(id);
+    Ok(inspect_containers(profile)?
+        .into_iter()
+        .filter(|container| normalize_image_id(&container.image) == target_id)
+        .map(|container| {
+            let status = container
+                .state
+                .map(|state| state.status)
+                .unwrap_or_default();
+            ImageContainerRef {
+                id: container.id,
+                image: container.image,
+                names: container.name.trim_start_matches('/').to_string(),
+                state: status.clone(),
+                status,
+            }
         })
-        .collect()
+        .collect())
 }
 
 pub fn prune_images(profile: &RemoteProfile) -> Result<String, String> {
@@ -333,7 +401,10 @@ pub fn remove_network(profile: &RemoteProfile, id: &str) -> Result<(), String> {
 
 pub fn remove_volume(profile: &RemoteProfile, name: &str, force: bool) -> Result<(), String> {
     let flag = if force { "-f " } else { "" };
-    docker_status(profile, &format!("docker volume rm {}{}", flag, sh_quote(name)))
+    docker_status(
+        profile,
+        &format!("docker volume rm {}{}", flag, sh_quote(name)),
+    )
 }
 
 pub fn prune_volumes(profile: &RemoteProfile) -> Result<String, String> {
@@ -347,7 +418,9 @@ fn docker_output(profile: &RemoteProfile, command: &str) -> Result<String, Strin
         REMOTE_COMMAND_TIMEOUT_SECONDS,
         sh_quote(command)
     );
-    let mut channel = connect(profile)?.channel_session().map_err(|e| e.to_string())?;
+    let mut channel = connect(profile)?
+        .channel_session()
+        .map_err(|e| e.to_string())?;
     channel.exec(&wrapped_command).map_err(|e| e.to_string())?;
 
     let mut stdout = String::new();
@@ -370,7 +443,11 @@ fn docker_output(profile: &RemoteProfile, command: &str) -> Result<String, Strin
             REMOTE_COMMAND_TIMEOUT_SECONDS
         ))
     } else {
-        let message = if stderr.trim().is_empty() { stdout } else { stderr };
+        let message = if stderr.trim().is_empty() {
+            stdout
+        } else {
+            stderr
+        };
         Err(message.trim().to_string())
     }
 }
@@ -380,16 +457,32 @@ fn docker_status(profile: &RemoteProfile, command: &str) -> Result<(), String> {
 }
 
 fn connect(profile: &RemoteProfile) -> Result<Session, String> {
+    connect_internal(profile, true)
+}
+
+fn connect_without_timeout(profile: &RemoteProfile) -> Result<Session, String> {
+    connect_internal(profile, false)
+}
+
+fn connect_internal(profile: &RemoteProfile, use_timeout: bool) -> Result<Session, String> {
     let address = format!("{}:{}", profile.host.trim(), profile.port);
     let tcp = TcpStream::connect(address).map_err(|e| format!("Failed to connect SSH: {}", e))?;
-    tcp.set_read_timeout(Some(Duration::from_secs(REMOTE_COMMAND_TIMEOUT_SECONDS + 5)))
+    if use_timeout {
+        tcp.set_read_timeout(Some(Duration::from_secs(
+            REMOTE_COMMAND_TIMEOUT_SECONDS + 5,
+        )))
         .map_err(|e| e.to_string())?;
-    tcp.set_write_timeout(Some(Duration::from_secs(REMOTE_COMMAND_TIMEOUT_SECONDS + 5)))
+        tcp.set_write_timeout(Some(Duration::from_secs(
+            REMOTE_COMMAND_TIMEOUT_SECONDS + 5,
+        )))
         .map_err(|e| e.to_string())?;
+    }
 
     let mut session = Session::new().map_err(|e| e.to_string())?;
     session.set_tcp_stream(tcp);
-    session.handshake().map_err(|e| format!("SSH handshake failed: {}", e))?;
+    session
+        .handshake()
+        .map_err(|e| format!("SSH handshake failed: {}", e))?;
 
     match profile.auth_type {
         RemoteAuthType::Password => {

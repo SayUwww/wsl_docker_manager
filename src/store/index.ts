@@ -24,6 +24,12 @@ interface AppState {
   toggleContainerSelection: (id: string) => void;
   selectAllContainers: (ids: string[]) => void;
   clearContainerSelection: () => void;
+  containerSearchTerm: string;
+  setContainerSearchTerm: (term: string) => void;
+  containerGroupFilter: string;
+  setContainerGroupFilter: (group: string) => void;
+  containerStatusFilter: string;
+  setContainerStatusFilter: (status: string) => void;
 
   // Images
   images: ImageInfo[];
@@ -102,6 +108,12 @@ export const useAppStore = create<AppState>()(
     }),
   selectAllContainers: (ids) => set({ selectedContainers: new Set(ids) }),
   clearContainerSelection: () => set({ selectedContainers: new Set() }),
+  containerSearchTerm: '',
+  setContainerSearchTerm: (term) => set({ containerSearchTerm: term }),
+  containerGroupFilter: 'all',
+  setContainerGroupFilter: (group) => set({ containerGroupFilter: group }),
+  containerStatusFilter: 'all',
+  setContainerStatusFilter: (status) => set({ containerStatusFilter: status }),
 
   images: [],
   setImages: (images) => set({ images }),

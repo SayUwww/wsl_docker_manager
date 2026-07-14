@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store';
 import { ImageInfo } from '../../types';
@@ -6,6 +6,7 @@ import { translate } from '../../i18n';
 import { useDocker } from '../../hooks/useDocker';
 import {
   AlertTriangle,
+  Boxes,
   ChevronDown,
   ChevronRight,
   Clock,
@@ -15,7 +16,16 @@ import {
   RefreshCw,
   Tag,
   Trash2,
+  X,
 } from 'lucide-react';
+
+interface ImageContainerUsage {
+  id: string;
+  name: string;
+  image: string;
+  state: string;
+  status: string;
+}
 
 function formatSize(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -35,6 +45,18 @@ function formatDate(ts: string): string {
   return d.toLocaleDateString('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+function getExclusiveSize(image: ImageInfo, imageById: Map<string, ImageInfo>): number {
+  if (image.sharedSize >= 0) {
+    return Math.max(0, image.size - Math.min(image.sharedSize, image.size));
+  }
+
+  const parent = imageById.get(normalizeImageId(image.parentId));
+  if (parent && parent.size <= image.size) {
+    return Math.max(0, image.size - parent.size);
+  }
+  return Math.max(0, image.size);
+}
+
 export default function ImageList() {
   const images = useAppStore((s) => s.images);
   const language = useAppStore((s) => s.language);
@@ -46,14 +68,21 @@ export default function ImageList() {
   const [pruning, setPruning] = useState(false);
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
   const [batchRemoving, setBatchRemoving] = useState(false);
-  const [collapsedImageIds, setCollapsedImageIds] = useState<Set<string>>(new Set());
+  const [expandedImageIds, setExpandedImageIds] = useState<Set<string>>(new Set());
+  const [usageImage, setUsageImage] = useState<ImageInfo | null>(null);
+  const [imageContainers, setImageContainers] = useState<ImageContainerUsage[]>([]);
+  const [imageContainersLoading, setImageContainersLoading] = useState(false);
+  const [imageContainersError, setImageContainersError] = useState('');
+  const imageContainerRequestRef = useRef(0);
+  const emptyRefreshAttemptedRef = useRef(false);
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
 
-  const totalSize = images.reduce((sum, img) => sum + img.size, 0);
-  const danglingCount = images.filter((i) => i.dangling).length;
-  const totalImages = images.length;
-  const imageById = new Map(images.map((img) => [normalizeImageId(img.id), img]));
-  const childrenByParent = images.reduce<Map<string, ImageInfo[]>>((acc, img) => {
+  const uniqueImages = dedupeImages(images);
+  const imageById = new Map(uniqueImages.map((img) => [normalizeImageId(img.id), img]));
+  const exclusiveSize = uniqueImages.reduce((sum, img) => sum + getExclusiveSize(img, imageById), 0);
+  const danglingCount = uniqueImages.filter((i) => i.dangling).length;
+  const totalImages = uniqueImages.length;
+  const childrenByParent = uniqueImages.reduce<Map<string, ImageInfo[]>>((acc, img) => {
     const parentKey = normalizeImageId(img.parentId);
     if (parentKey && imageById.has(parentKey)) {
       const children = acc.get(parentKey) || [];
@@ -62,10 +91,62 @@ export default function ImageList() {
     }
     return acc;
   }, new Map());
-  const rootImages = images.filter((img) => {
+  const rootImages = uniqueImages.filter((img) => {
     const parentKey = normalizeImageId(img.parentId);
     return !parentKey || !imageById.has(parentKey);
   });
+  const unaccountedSharedSize = Math.max(0, ...rootImages.map((img) => img.sharedSize));
+  const totalSize = exclusiveSize + unaccountedSharedSize;
+
+  useEffect(() => {
+    if (emptyRefreshAttemptedRef.current || images.length > 0 || isImagesLoading) return;
+    emptyRefreshAttemptedRef.current = true;
+    void refreshImages();
+  }, [images.length, isImagesLoading, refreshImages]);
+
+  useEffect(() => {
+    if (!usageImage) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        imageContainerRequestRef.current += 1;
+        setUsageImage(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [usageImage]);
+
+  const loadImageContainers = useCallback(async (image: ImageInfo) => {
+    const requestId = ++imageContainerRequestRef.current;
+    setImageContainersLoading(true);
+    setImageContainersError('');
+    try {
+      const containers = await invoke<ImageContainerUsage[]>('list_image_containers', { id: image.id });
+      if (imageContainerRequestRef.current === requestId) {
+        setImageContainers(containers);
+      }
+    } catch (error) {
+      if (imageContainerRequestRef.current === requestId) {
+        setImageContainers([]);
+        setImageContainersError(String(error));
+      }
+    } finally {
+      if (imageContainerRequestRef.current === requestId) {
+        setImageContainersLoading(false);
+      }
+    }
+  }, []);
+
+  const openImageContainers = (image: ImageInfo) => {
+    setUsageImage(image);
+    setImageContainers([]);
+    void loadImageContainers(image);
+  };
+
+  const closeImageContainers = () => {
+    imageContainerRequestRef.current += 1;
+    setUsageImage(null);
+  };
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -78,7 +159,7 @@ export default function ImageList() {
 
   const toggleCollapse = (id: string) => {
     const key = normalizeImageId(id);
-    setCollapsedImageIds((prev) => {
+    setExpandedImageIds((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -229,7 +310,7 @@ export default function ImageList() {
 
     const nextVisited = new Set(visited).add(imageKey);
     const children = childrenByParent.get(imageKey) || [];
-    const collapsed = collapsedImageIds.has(imageKey);
+    const collapsed = children.length > 0 && !expandedImageIds.has(imageKey);
     const parentKey = normalizeImageId(img.parentId);
     const missingParent = depth === 0 && parentKey && !imageById.has(parentKey);
     const rows: ReactNode[] = [
@@ -284,7 +365,27 @@ export default function ImageList() {
           </div>
         </td>
         <td className="py-2.5 px-3 font-mono text-xs text-zinc-400">{formatSize(img.size)}</td>
-        <td className="py-2.5 px-3 text-xs text-zinc-400">{img.containers}</td>
+        <td
+          className="py-2.5 px-3 font-mono text-xs text-zinc-300"
+          title={img.sharedSize >= 0 ? `${formatSize(img.sharedSize)} shared` : undefined}
+        >
+          {formatSize(getExclusiveSize(img, imageById))}
+        </td>
+        <td className="py-2.5 px-3 text-xs text-zinc-400">
+          {img.containers > 0 ? (
+            <button
+              type="button"
+              onClick={() => openImageContainers(img)}
+              className="inline-flex h-7 min-w-10 items-center justify-center gap-1 rounded-md border border-indigo-500/25 bg-indigo-500/10 px-2 font-mono text-xs text-indigo-300 transition hover:border-indigo-400/50 hover:bg-indigo-500/20 hover:text-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/60"
+              title={t('viewImageContainers')}
+            >
+              <Boxes size={13} />
+              {img.containers}
+            </button>
+          ) : (
+            <span className="inline-flex h-7 min-w-10 items-center justify-center font-mono">0</span>
+          )}
+        </td>
         <td className="py-2.5 px-4">
           <div className="flex justify-end">
             <button
@@ -374,7 +475,7 @@ export default function ImageList() {
               <Tag size={14} />
               {t('usedByContainers')}
             </div>
-            <div className="text-2xl font-bold">{images.reduce((s, i) => s + i.containers, 0)}</div>
+            <div className="text-2xl font-bold">{uniqueImages.reduce((s, i) => s + i.containers, 0)}</div>
           </div>
         </div>
       </div>
@@ -389,7 +490,7 @@ export default function ImageList() {
                     type="checkbox"
                     className="rounded border-zinc-600 bg-zinc-800"
                     onChange={(e) => {
-                      if (e.target.checked) setSelectedIds(new Set(images.filter((i) => i.dangling).map((i) => i.id)));
+                      if (e.target.checked) setSelectedIds(new Set(uniqueImages.filter((i) => i.dangling).map((i) => i.id)));
                       else setSelectedIds(new Set());
                     }}
                   />
@@ -398,6 +499,7 @@ export default function ImageList() {
                 <th className="px-3 py-3 text-left text-xs font-medium uppercase text-zinc-400">{t('imageId')}</th>
                 <th className="px-3 py-3 text-left text-xs font-medium uppercase text-zinc-400">{t('created')}</th>
                 <th className="px-3 py-3 text-left text-xs font-medium uppercase text-zinc-400">{t('size')}</th>
+                <th className="px-3 py-3 text-left text-xs font-medium uppercase text-zinc-400">{t('exclusiveSize')}</th>
                 <th className="px-3 py-3 text-left text-xs font-medium uppercase text-zinc-400">{t('containers')}</th>
                 <th className="px-4 py-3 text-right text-xs font-medium uppercase text-zinc-400">{t('actions')}</th>
               </tr>
@@ -408,13 +510,124 @@ export default function ImageList() {
               ))}
             </tbody>
           </table>
-          {images.length === 0 && (
+          {uniqueImages.length === 0 && (
             <div className="py-16 text-center text-sm text-zinc-500">{isImagesLoading ? t('loadingData') : t('noImages')}</div>
           )}
         </div>
       </div>
+
+      {usageImage && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="image-containers-title"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeImageContainers();
+          }}
+        >
+          <div className="w-full max-w-xl overflow-hidden rounded-lg border border-zinc-700 bg-zinc-950 shadow-2xl shadow-black/50">
+            <div className="flex items-start gap-3 border-b border-zinc-800 px-5 py-4">
+              <div className="mt-0.5 rounded-lg bg-indigo-500/15 p-2 text-indigo-400">
+                <Boxes size={18} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 id="image-containers-title" className="text-sm font-semibold text-zinc-100">
+                  {t('imageContainersTitle')}
+                </h3>
+                <p className="mt-1 truncate font-mono text-xs text-zinc-500" title={usageImage.id}>
+                  {t('imageId')}: {shortImageId(usageImage.id)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void loadImageContainers(usageImage)}
+                disabled={imageContainersLoading}
+                className="rounded p-1.5 text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-50"
+                title={t('refresh')}
+              >
+                <RefreshCw size={16} className={imageContainersLoading ? 'animate-spin' : ''} />
+              </button>
+              <button
+                type="button"
+                onClick={closeImageContainers}
+                className="rounded p-1.5 text-zinc-500 transition hover:bg-zinc-800 hover:text-zinc-200"
+                title={t('close')}
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="max-h-[55vh] min-h-40 overflow-y-auto px-5 py-3">
+              {imageContainersLoading ? (
+                <div className="flex min-h-32 items-center justify-center gap-2 text-sm text-zinc-500">
+                  <Loader2 size={16} className="animate-spin" />
+                  {t('loadingData')}
+                </div>
+              ) : imageContainersError ? (
+                <div className="flex min-h-32 flex-col items-center justify-center gap-3 text-center">
+                  <AlertTriangle size={22} className="text-red-400" />
+                  <div>
+                    <p className="text-sm text-zinc-300">{t('loadImageContainersFailed')}</p>
+                    <p className="mt-1 max-w-md break-words text-xs text-zinc-500">{imageContainersError}</p>
+                  </div>
+                  <button type="button" className="btn-secondary text-xs" onClick={() => void loadImageContainers(usageImage)}>
+                    <RefreshCw size={14} className="mr-1" />
+                    {t('refresh')}
+                  </button>
+                </div>
+              ) : imageContainers.length === 0 ? (
+                <div className="flex min-h-32 flex-col items-center justify-center gap-2 text-sm text-zinc-500">
+                  <Boxes size={24} />
+                  {t('noImageContainers')}
+                </div>
+              ) : (
+                <div className="divide-y divide-zinc-800">
+                  {imageContainers.map((container) => (
+                    <div key={container.id} className="flex items-center gap-3 py-3">
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${containerStateDot(container.state)}`} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="truncate text-sm font-medium text-zinc-200" title={container.name}>
+                            {container.name || shortImageId(container.id)}
+                          </span>
+                          <span className="shrink-0 font-mono text-[11px] text-zinc-500">{shortImageId(container.id)}</span>
+                        </div>
+                        <p className="mt-1 truncate text-xs text-zinc-500" title={container.status || container.image}>
+                          {container.status || container.image || '-'}
+                        </p>
+                      </div>
+                      <span className={containerStateBadge(container.state)}>{container.state || '-'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-zinc-800 px-5 py-3 text-xs text-zinc-500">
+              {imageContainers.length} {t('containers')}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function containerStateDot(state: string): string {
+  const normalized = state.toLowerCase();
+  if (normalized === 'running') return 'bg-green-400';
+  if (normalized === 'paused') return 'bg-amber-400';
+  if (normalized === 'exited' || normalized === 'dead') return 'bg-red-400';
+  return 'bg-zinc-500';
+}
+
+function containerStateBadge(state: string): string {
+  const normalized = state.toLowerCase();
+  if (normalized === 'running') return 'badge-success shrink-0';
+  if (normalized === 'paused') return 'badge-warning shrink-0';
+  if (normalized === 'exited' || normalized === 'dead') return 'badge-error shrink-0';
+  return 'badge-info shrink-0';
 }
 
 function dedupeImages(images: ImageInfo[]): ImageInfo[] {

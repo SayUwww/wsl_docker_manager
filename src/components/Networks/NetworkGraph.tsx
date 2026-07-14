@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store';
 import { NetworkInfo } from '../../types';
@@ -44,7 +44,14 @@ export default function NetworkGraph() {
   const [removingNetworkId, setRemovingNetworkId] = useState<string | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const emptyRefreshAttemptedRef = useRef(false);
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
+
+  useEffect(() => {
+    if (emptyRefreshAttemptedRef.current || networks.length > 0 || isNetworksLoading) return;
+    emptyRefreshAttemptedRef.current = true;
+    void refreshNetworks();
+  }, [isNetworksLoading, networks.length, refreshNetworks]);
 
   const buildGraph = useCallback((network: NetworkInfo) => {
     const newNodes: Node[] = [];

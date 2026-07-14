@@ -23,11 +23,12 @@ export default function ResourceRing({
       <div className="relative" style={{ width: size, height: size }}>
         <svg width={size} height={size} className="-rotate-90">
           <circle
+            className="resource-ring-track"
             cx={size / 2}
             cy={size / 2}
             r={radius}
             fill="none"
-            stroke="rgba(255,255,255,0.06)"
+            stroke="var(--resource-ring-track)"
             strokeWidth={strokeWidth}
           />
           <circle

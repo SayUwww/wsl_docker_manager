@@ -1,4 +1,4 @@
-﻿# WSL Docker Manager
+# WSL Docker Manager
 
 WSL Docker Manager 是一个面向 Windows 桌面的 Docker 管理工具，基于 Tauri 2、React、TypeScript 和 Rust 构建。它可以管理本机 WSL Docker、Windows 侧 Docker，以及通过 Rust 内置 SSH 连接到远程 Linux 服务器管理远程 Docker。
 

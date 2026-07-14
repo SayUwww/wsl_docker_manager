@@ -1,8 +1,14 @@
+use crate::docker::{
+    emit_terminal_output, image_container_counts, normalize_image_id, TerminalOutputEvent,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use tauri::ipc::Channel;
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::Command as TokioCommand;
 
 const DOCKER_COMMAND_TIMEOUT_SECONDS: u64 = 20;
 #[cfg(target_os = "windows")]
@@ -58,6 +64,7 @@ pub struct Image {
     pub digest: String,
     pub created_at: String,
     pub size: String,
+    pub shared_size: i64,
     pub containers: String,
 }
 
@@ -181,7 +188,7 @@ struct ApiImage {
     repo_digests: Option<Vec<String>>,
     created: i64,
     size: i64,
-    containers: Option<i64>,
+    shared_size: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -268,14 +275,26 @@ printf '{"cpu_percent":%s,"mem_used":%s,"mem_total":%s,"disk_used":%s,"disk_tota
 }
 
 pub fn list_images() -> Result<Vec<Image>, String> {
-    let output = docker_api("/images/json?all=true")?;
+    let output = docker_api("/images/json?all=true&shared-size=true")?;
     let images: Vec<ApiImage> =
         serde_json::from_str(&output).map_err(|e| format!("Failed to parse images: {}", e))?;
+    let container_output = docker_api("/containers/json?all=true")?;
+    let containers: Vec<ApiContainer> = serde_json::from_str(&container_output)
+        .map_err(|e| format!("Failed to parse containers for image counts: {}", e))?;
+    let container_counts = image_container_counts(
+        containers
+            .iter()
+            .map(|container| container.image_id.as_str()),
+    );
 
     Ok(images
         .into_iter()
         .map(|img| {
             let id = img.id;
+            let containers = container_counts
+                .get(normalize_image_id(&id))
+                .copied()
+                .unwrap_or(0);
             let parent_id = img
                 .parent_id
                 .filter(|parent_id| !parent_id.is_empty())
@@ -302,10 +321,8 @@ pub fn list_images() -> Result<Vec<Image>, String> {
                     .unwrap_or_else(|| "<none>".to_string()),
                 created_at: img.created.to_string(),
                 size: img.size.to_string(),
-                containers: img
-                    .containers
-                    .map(|count| count.to_string())
-                    .unwrap_or_else(|| "0".to_string()),
+                shared_size: img.shared_size.unwrap_or(-1),
+                containers: containers.to_string(),
             }
         })
         .collect())
@@ -429,17 +446,79 @@ pub fn container_logs(id: &str, tail: usize) -> Result<Vec<String>, String> {
     Ok(output.lines().map(ToOwned::to_owned).collect())
 }
 
-pub fn exec_container(id: &str, cmd: &[String]) -> Result<String, String> {
-    if cmd.is_empty() {
+pub async fn exec_container_stream(
+    id: &str,
+    command: &str,
+    on_event: Channel<TerminalOutputEvent>,
+) -> Result<(), String> {
+    if command.trim().is_empty() {
         return Err("Command is empty".to_string());
     }
 
-    let quoted_cmd = cmd
-        .iter()
-        .map(|part| sh_quote(part))
-        .collect::<Vec<_>>()
-        .join(" ");
-    docker_output(&format!("docker exec {} {}", sh_quote(id), quoted_cmd))
+    let mut process = TokioCommand::new("wsl");
+    process
+        .args(["-e", "docker", "exec", id, "sh", "-lc", command])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    process.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = process
+        .spawn()
+        .map_err(|e| format!("Failed to execute wsl: {}", e))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture container stdout".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Failed to capture container stderr".to_string())?;
+
+    let stdout_event = on_event.clone();
+    let stderr_event = on_event.clone();
+    let (stdout_result, stderr_result, status_result) = tokio::join!(
+        forward_terminal_output(stdout, "stdout", stdout_event),
+        forward_terminal_output(stderr, "stderr", stderr_event),
+        child.wait(),
+    );
+    stdout_result?;
+    stderr_result?;
+    let status =
+        status_result.map_err(|e| format!("Failed to wait for container command: {}", e))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Command exited with code {}",
+            status
+                .code()
+                .map_or_else(|| "unknown".to_string(), |code| code.to_string())
+        ))
+    }
+}
+
+async fn forward_terminal_output<R>(
+    mut reader: R,
+    stream: &str,
+    on_event: Channel<TerminalOutputEvent>,
+) -> Result<(), String>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .await
+            .map_err(|e| format!("Failed to read container {}: {}", stream, e))?;
+        if count == 0 {
+            return Ok(());
+        }
+        emit_terminal_output(&on_event, stream, decode_command_output(&buffer[..count]));
+    }
 }
 
 pub fn remove_image(id: &str, force: bool) -> Result<String, String> {
@@ -448,21 +527,18 @@ pub fn remove_image(id: &str, force: bool) -> Result<String, String> {
 }
 
 pub fn image_containers(id: &str) -> Result<Vec<ImageContainerRef>, String> {
-    let output = docker_output(&format!(
-        "docker ps -a --no-trunc --filter ancestor={} --format '{{{{json .}}}}'",
-        sh_quote(id)
-    ))?;
-    if output.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    output
-        .lines()
-        .map(|line| {
-            serde_json::from_str(line)
-                .map_err(|e| format!("Failed to parse image container: {}", e))
+    let target_id = normalize_image_id(id);
+    Ok(list_containers(true)?
+        .into_iter()
+        .filter(|container| normalize_image_id(&container.image_id) == target_id)
+        .map(|container| ImageContainerRef {
+            id: container.id,
+            image: container.image_id,
+            names: container.names,
+            state: container.state,
+            status: container.status,
         })
-        .collect()
+        .collect())
 }
 
 pub fn prune_images() -> Result<String, String> {

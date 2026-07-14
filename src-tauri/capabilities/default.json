@@ -10,6 +10,8 @@
     "core:window:allow-is-visible",
     "core:window:allow-minimize",
     "autostart:default",
+    "dialog:allow-save",
+    "fs:allow-write-text-file",
     "shell:allow-open"
   ]
 }

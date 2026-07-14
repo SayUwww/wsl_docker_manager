@@ -11,13 +11,27 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use sysinfo::{Disks, System};
-use tauri::{AppHandle, Manager, State};
+use tauri::{ipc::Channel, AppHandle, Manager, State};
 use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ContainerMeta {
     pub group: Option<String>,
     pub urls: Option<Vec<String>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOutputEvent {
+    pub stream: String,
+    pub data: String,
+}
+
+pub fn emit_terminal_output(channel: &Channel<TerminalOutputEvent>, stream: &str, data: String) {
+    let _ = channel.send(TerminalOutputEvent {
+        stream: stream.to_string(),
+        data,
+    });
 }
 
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -235,6 +249,23 @@ pub async fn list_container_infos(
         .map_err(|e| format!("Failed to list containers: {}", e))
 }
 
+pub fn normalize_image_id(id: &str) -> &str {
+    id.strip_prefix("sha256:").unwrap_or(id)
+}
+
+pub fn image_container_counts<'a>(
+    image_ids: impl IntoIterator<Item = &'a str>,
+) -> HashMap<String, i64> {
+    let mut counts = HashMap::new();
+    for image_id in image_ids {
+        let image_id = normalize_image_id(image_id);
+        if !image_id.is_empty() {
+            *counts.entry(image_id.to_string()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
 pub async fn get_container_stats(
     docker: &Docker,
     id: &str,
@@ -325,26 +356,27 @@ pub async fn get_container_log_stream(
         stdout: true,
         stderr: true,
         tail: tail.to_string(),
-        follow: true,
+        follow: false,
         timestamps: true,
         ..Default::default()
     };
     Ok(docker.logs(id, Some(options)))
 }
 
-pub async fn exec_in_container(
+pub async fn exec_in_container_stream(
     docker: &Docker,
     id: &str,
-    cmd: Vec<&str>,
-) -> Result<String, String> {
+    command: &str,
+    on_event: Channel<TerminalOutputEvent>,
+) -> Result<(), String> {
     let exec = docker
         .create_exec(
             id,
             CreateExecOptions {
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
-                cmd: Some(cmd),
-                tty: Some(true),
+                cmd: Some(vec!["sh", "-lc", command]),
+                tty: Some(false),
                 ..Default::default()
             },
         )
@@ -358,14 +390,18 @@ pub async fn exec_in_container(
 
     match output {
         StartExecResults::Attached { output, .. } => {
-            let mut result = String::new();
             let mut stream = output;
-            while let Some(Ok(chunk)) = stream.next().await {
-                result.push_str(&String::from_utf8_lossy(&chunk.into_bytes()));
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| format!("Failed to read exec output: {}", e))?;
+                emit_terminal_output(
+                    &on_event,
+                    "stdout",
+                    String::from_utf8_lossy(&chunk.into_bytes()).into_owned(),
+                );
             }
-            Ok(result)
+            Ok(())
         }
-        StartExecResults::Detached => Ok("Detached".to_string()),
+        StartExecResults::Detached => Err("Container exec detached unexpectedly".to_string()),
     }
 }
 
@@ -397,4 +433,24 @@ fn format_size(bytes: u64) -> String {
         unit_idx += 1;
     }
     format!("{:.1} {}", size, UNITS[unit_idx])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{image_container_counts, normalize_image_id};
+
+    #[test]
+    fn normalizes_prefixed_image_ids() {
+        assert_eq!(normalize_image_id("sha256:abc123"), "abc123");
+        assert_eq!(normalize_image_id("abc123"), "abc123");
+    }
+
+    #[test]
+    fn counts_containers_using_normalized_image_ids() {
+        let counts = image_container_counts(["sha256:abc123", "abc123", "sha256:def456", ""]);
+
+        assert_eq!(counts.get("abc123"), Some(&2));
+        assert_eq!(counts.get("def456"), Some(&1));
+        assert_eq!(counts.len(), 2);
+    }
 }

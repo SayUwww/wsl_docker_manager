@@ -77,10 +77,12 @@ pub async fn remove_volume(
     }
     if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
         let profile = DockerState::selected_remote_profile(&state).await?;
-        return tokio::task::spawn_blocking(move || remote_docker::remove_volume(&profile, &name, force))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| format!("Failed to remove volume: {}", e));
+        return tokio::task::spawn_blocking(move || {
+            remote_docker::remove_volume(&profile, &name, force)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Failed to remove volume: {}", e));
     }
 
     let docker = DockerState::get_docker(state).await?;

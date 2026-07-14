@@ -19,6 +19,16 @@ pub struct ImageResponse {
     pub dangling: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageContainerResponse {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub state: String,
+    pub status: String,
+}
+
 #[tauri::command]
 pub async fn list_images(state: State<'_, DockerState>) -> Result<Vec<ImageResponse>, String> {
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
@@ -34,12 +44,22 @@ pub async fn list_images(state: State<'_, DockerState>) -> Result<Vec<ImageRespo
 
     let docker = DockerState::get_docker(state).await?;
     let images = docker::list_images(&docker).await?;
+    let containers = docker::list_container_infos(&docker, true).await?;
+    let container_counts = docker::image_container_counts(
+        containers
+            .iter()
+            .filter_map(|container| container.image_id.as_deref()),
+    );
 
     let result: Vec<ImageResponse> = images
         .into_iter()
         .map(|img| {
             let tags = img.repo_tags;
             let dangling = tags.is_empty() || tags.iter().all(|t| t == "<none>:<none>");
+            let containers = container_counts
+                .get(docker::normalize_image_id(&img.id))
+                .copied()
+                .unwrap_or(0);
 
             ImageResponse {
                 id: img.id,
@@ -50,13 +70,57 @@ pub async fn list_images(state: State<'_, DockerState>) -> Result<Vec<ImageRespo
                 size: img.size,
                 shared_size: img.shared_size,
                 virtual_size: img.virtual_size.unwrap_or(0),
-                containers: img.containers,
+                containers,
                 dangling,
             }
         })
         .collect();
 
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn list_image_containers(
+    state: State<'_, DockerState>,
+    id: String,
+) -> Result<Vec<ImageContainerResponse>, String> {
+    if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
+        return wsl_docker::image_containers(&id).map(image_container_refs_to_response);
+    }
+    if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
+        let profile = DockerState::selected_remote_profile(&state).await?;
+        return tokio::task::spawn_blocking(move || {
+            remote_docker::image_containers(&profile, &id).map(image_container_refs_to_response)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
+    let docker = DockerState::get_docker(state).await?;
+    let containers = docker::list_container_infos(&docker, true).await?;
+    let target_id = docker::normalize_image_id(&id);
+
+    Ok(containers
+        .into_iter()
+        .filter(|container| {
+            container
+                .image_id
+                .as_deref()
+                .is_some_and(|image_id| docker::normalize_image_id(image_id) == target_id)
+        })
+        .map(|container| ImageContainerResponse {
+            id: container.id.unwrap_or_default(),
+            name: container
+                .names
+                .unwrap_or_default()
+                .join(", ")
+                .trim_start_matches('/')
+                .to_string(),
+            image: container.image.unwrap_or_default(),
+            state: container.state.unwrap_or_default(),
+            status: container.status.unwrap_or_default(),
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -184,6 +248,21 @@ fn short_id(id: &str) -> String {
     id.trim_start_matches("sha256:").chars().take(12).collect()
 }
 
+fn image_container_refs_to_response(
+    containers: Vec<wsl_docker::ImageContainerRef>,
+) -> Vec<ImageContainerResponse> {
+    containers
+        .into_iter()
+        .map(|container| ImageContainerResponse {
+            id: container.id,
+            name: container.names.trim_start_matches('/').to_string(),
+            image: container.image,
+            state: container.state,
+            status: container.status,
+        })
+        .collect()
+}
+
 fn list_wsl_images() -> Result<Vec<ImageResponse>, String> {
     remote_images_to_response(wsl_docker::list_images()?)
 }
@@ -216,7 +295,7 @@ fn remote_images_to_response(images: Vec<wsl_docker::Image>) -> Result<Vec<Image
                 repo_digests,
                 created: img.created_at,
                 size,
-                shared_size: 0,
+                shared_size: img.shared_size,
                 virtual_size: size,
                 containers: img.containers.parse().unwrap_or(0),
                 dangling: img.repository == "<none>" || img.tag == "<none>",

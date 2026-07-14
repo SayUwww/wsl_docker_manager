@@ -1,6 +1,7 @@
 import { useAppStore } from '../../store';
+import { useDocker } from '../../hooks/useDocker';
 import { DockerStatus } from '../../types';
-import { Info, Server, Package, Container } from 'lucide-react';
+import { Info, Server, Package, Container, RefreshCw } from 'lucide-react';
 import { translate } from '../../i18n';
 
 const statusLabels: Record<DockerStatus, { labelKey: Parameters<typeof translate>[1]; className: string }> = {
@@ -14,15 +15,29 @@ export default function DockerInfoCard() {
   const dockerStatus = useAppStore((s) => s.dockerStatus);
   const dockerInfo = useAppStore((s) => s.dockerInfo);
   const language = useAppStore((s) => s.language);
+  const refreshing = useAppStore((s) => Boolean(s.commandLoading.get_docker_status));
+  const { refreshDockerStatus } = useDocker();
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
   const status = statusLabels[dockerStatus];
 
   return (
     <div className="card p-5">
-      <h3 className="text-sm font-semibold text-zinc-300 mb-4 flex items-center gap-2">
-        <Info size={16} className="text-indigo-400" />
-        {t('dockerEngine')}
-      </h3>
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-300">
+          <Info size={16} className="text-indigo-400" />
+          {t('dockerEngine')}
+        </h3>
+        <button
+          type="button"
+          onClick={() => void refreshDockerStatus()}
+          disabled={refreshing}
+          className="btn-ghost btn-xs"
+          title={refreshing ? t('refreshing') : t('refresh')}
+          aria-label={refreshing ? t('refreshing') : t('refresh')}
+        >
+          <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+        </button>
+      </div>
 
       <div className="mb-4">
         <span className={status.className}>{t(status.labelKey)}</span>

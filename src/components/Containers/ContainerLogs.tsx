@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { save } from '@tauri-apps/plugin-dialog';
+import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { useAppStore } from '../../store';
 import { LogEntry } from '../../types';
-import { ArrowLeft, Search, Download, X, Play, Pause, Eraser } from 'lucide-react';
+import { ArrowLeft, Search, Download, X, RefreshCw, Eraser } from 'lucide-react';
 import { translate } from '../../i18n';
 
 const LOG_COLORS: Record<string, string> = {
@@ -16,6 +18,8 @@ const LOG_COLORS: Record<string, string> = {
   fatal: 'text-red-600 font-bold',
   critical: 'text-red-600 font-bold',
 };
+
+type AutoRefreshMs = 0 | 2000 | 5000 | 10000 | 30000;
 
 function getLogClass(msg: string): string {
   const lower = msg.toLowerCase();
@@ -31,43 +35,58 @@ export default function ContainerLogs() {
   const logContainerName = useAppStore((s) => s.logContainerName);
   const setLogContainer = useAppStore((s) => s.setLogContainer);
   const language = useAppStore((s) => s.language);
+  const addToast = useAppStore((s) => s.addToast);
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
 
   const [logs, setLogs] = useState<string[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [paused, setPaused] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [tailLines, setTailLines] = useState(500);
+  const [autoRefreshMs, setAutoRefreshMs] = useState<AutoRefreshMs>(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const refreshRequestRef = useRef(0);
+  const activeRefreshesRef = useRef(0);
   const [autoScroll, setAutoScroll] = useState(true);
 
-  useEffect(() => {
+  const refreshLogs = useCallback(async () => {
     if (!logContainerId) return;
 
-    let buffer: string[] = [];
-    let active = true;
-
-    // Fetch initial logs via spawn
-    const fetchLogs = async () => {
-      try {
-        const result = await invoke<LogEntry[]>('get_container_logs', {
-          id: logContainerId,
-          tail: tailLines,
-        });
-        if (active) {
-          buffer = result.map((e) => `[${e.timestamp}] ${e.message}`);
-          setLogs([...buffer]);
-        }
-      } catch (e) {
-        console.error('Failed to fetch logs:', e);
+    const requestId = ++refreshRequestRef.current;
+    activeRefreshesRef.current += 1;
+    setRefreshing(true);
+    try {
+      const result = await invoke<LogEntry[]>('get_container_logs', {
+        id: logContainerId,
+        tail: tailLines,
+      });
+      if (requestId === refreshRequestRef.current) {
+        setLogs(result.map((entry) => `[${entry.timestamp}] ${entry.message}`));
       }
-    };
+    } catch (e) {
+      console.error('Failed to fetch logs:', e);
+    } finally {
+      activeRefreshesRef.current = Math.max(0, activeRefreshesRef.current - 1);
+      if (requestId === refreshRequestRef.current) {
+        setRefreshing(false);
+      }
+    }
+  }, [logContainerId, tailLines]);
 
-    fetchLogs();
+  useEffect(() => {
+    refreshLogs();
 
     return () => {
-      active = false;
+      refreshRequestRef.current += 1;
     };
-  }, [logContainerId, tailLines]);
+  }, [refreshLogs]);
+
+  useEffect(() => {
+    if (autoRefreshMs === 0) return;
+    const interval = window.setInterval(() => {
+      if (activeRefreshesRef.current === 0) refreshLogs();
+    }, autoRefreshMs);
+    return () => window.clearInterval(interval);
+  }, [autoRefreshMs, refreshLogs]);
 
   useEffect(() => {
     if (autoScroll && scrollRef.current) {
@@ -88,23 +107,30 @@ export default function ContainerLogs() {
     });
   }, [filteredLogs, searchTerm]);
 
-  const handleExport = useCallback(() => {
-    const content = logs.join('\n');
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${logContainerName || 'container'}-logs-${Date.now()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [logs, logContainerName]);
+  const handleExport = useCallback(async () => {
+    if (logs.length === 0) return;
+
+    const safeName = (logContainerName || 'container').replace(/[<>:"/\\|?*]/g, '_');
+    try {
+      const path = await save({
+        defaultPath: `${safeName}-logs-${Date.now()}.txt`,
+        filters: [{ name: 'Text', extensions: ['txt', 'log'] }],
+      });
+      if (!path) return;
+      await writeTextFile(path, logs.join('\n'));
+      addToast({ type: 'success', title: `${t('export')} ${t('completed')}`, message: path });
+    } catch (error) {
+      console.error('Failed to export logs:', error);
+      addToast({ type: 'error', title: `${t('export')} ${t('failed')}`, message: String(error) });
+    }
+  }, [addToast, logs, logContainerName, t]);
 
   const handleClear = () => setLogs([]);
 
   return (
-    <div className="flex flex-col h-full bg-zinc-950">
+    <div className="flex h-screen w-screen min-h-0 min-w-0 flex-col bg-zinc-950">
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-3 border-b border-zinc-800 bg-zinc-950">
+      <header className="flex shrink-0 items-center justify-between border-b border-zinc-800 bg-zinc-950 px-6 py-3">
         <div className="flex items-center gap-4">
           <button
             onClick={() => setLogContainer(null, null)}
@@ -135,13 +161,25 @@ export default function ContainerLogs() {
               </button>
             )}
           </div>
-          <button onClick={() => setPaused(!paused)} className={`btn-ghost btn-xs ${paused ? 'text-amber-400' : ''}`}>
-            {paused ? <Play size={14} /> : <Pause size={14} />}
+          <button
+            type="button"
+            onClick={refreshLogs}
+            disabled={refreshing}
+            className="btn-ghost btn-xs"
+            title={refreshing ? t('refreshing') : t('refresh')}
+            aria-label={refreshing ? t('refreshing') : t('refresh')}
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
           </button>
           <button onClick={handleClear} className="btn-ghost btn-xs" title={t('clear')}>
             <Eraser size={14} />
           </button>
-          <button onClick={handleExport} className="btn-ghost btn-xs" title={t('export')}>
+          <button
+            onClick={handleExport}
+            disabled={logs.length === 0}
+            className="btn-ghost btn-xs"
+            title={t('export')}
+          >
             <Download size={14} />
           </button>
         </div>
@@ -150,7 +188,7 @@ export default function ContainerLogs() {
       {/* Log output */}
       <div
         ref={scrollRef}
-        className="flex-1 overflow-auto p-4 font-mono text-xs leading-5"
+        className="min-h-0 flex-1 overflow-auto p-4 font-mono text-xs leading-5"
         onScroll={(e) => {
           const el = e.currentTarget;
           setAutoScroll(el.scrollHeight - el.scrollTop - el.clientHeight < 50);
@@ -178,16 +216,30 @@ export default function ContainerLogs() {
           );
         })}
         {filteredLogs.length === 0 && (
-          <div className="flex items-center justify-center h-full text-zinc-600">
+          <div className="flex h-full min-h-48 items-center justify-center text-zinc-600">
             {logs.length === 0 ? t('waitingForLogs') : t('noMatchingLogEntries')}
           </div>
         )}
       </div>
 
       {/* Status bar */}
-      <div className="flex items-center justify-between px-6 py-1.5 border-t border-zinc-800 bg-zinc-950 text-xs text-zinc-500">
+      <div className="flex shrink-0 items-center justify-between border-t border-zinc-800 bg-zinc-950 px-6 py-1.5 text-xs text-zinc-500">
         <span>{logs.length} {t('lines')}</span>
         <div className="flex items-center gap-4">
+          <label className="flex items-center gap-1.5">
+            {t('autoRefresh')}:
+            <select
+              value={autoRefreshMs}
+              onChange={(event) => setAutoRefreshMs(Number(event.target.value) as AutoRefreshMs)}
+              className="rounded border border-zinc-700 bg-zinc-800 px-1.5 py-0.5 text-xs"
+            >
+              <option value={0}>{t('never')}</option>
+              <option value={2000}>2s</option>
+              <option value={5000}>5s</option>
+              <option value={10000}>10s</option>
+              <option value={30000}>30s</option>
+            </select>
+          </label>
           <label className="flex items-center gap-1.5">
             {t('tail')}:
             <select
@@ -201,7 +253,6 @@ export default function ContainerLogs() {
               <option value={5000}>5000</option>
             </select>
           </label>
-          <span>{paused ? t('paused') : t('streaming')}</span>
         </div>
       </div>
     </div>

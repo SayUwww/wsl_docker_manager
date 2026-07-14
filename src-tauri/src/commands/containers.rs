@@ -1,10 +1,10 @@
-use crate::docker::{self, ConnectionMode, DockerState};
+use crate::docker::{self, ConnectionMode, DockerState, TerminalOutputEvent};
 use crate::remote_docker;
 use crate::wsl_docker;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use tauri::State;
+use tauri::{ipc::Channel, State};
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -157,10 +157,12 @@ pub async fn restart_container(state: State<'_, DockerState>, id: String) -> Res
     }
     if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
         let profile = DockerState::selected_remote_profile(&state).await?;
-        return tokio::task::spawn_blocking(move || remote_docker::restart_container(&profile, &id))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| format!("Failed to restart: {}", e));
+        return tokio::task::spawn_blocking(move || {
+            remote_docker::restart_container(&profile, &id)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Failed to restart: {}", e));
     }
     let docker = DockerState::get_docker(state).await?;
     docker
@@ -376,19 +378,21 @@ pub async fn get_container_logs(
     }
     if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
         let profile = DockerState::selected_remote_profile(&state).await?;
-        return tokio::task::spawn_blocking(move || remote_docker::container_logs(&profile, &id, tail))
-            .await
-            .map_err(|e| e.to_string())?
-            .map(|lines| {
-                lines
-                    .into_iter()
-                    .map(|message| LogEntry {
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        stream: "stdout".to_string(),
-                        message,
-                    })
-                    .collect()
-            });
+        return tokio::task::spawn_blocking(move || {
+            remote_docker::container_logs(&profile, &id, tail)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|lines| {
+            lines
+                .into_iter()
+                .map(|message| LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    stream: "stdout".to_string(),
+                    message,
+                })
+                .collect()
+        });
     }
 
     let docker = DockerState::get_docker(state).await?;
@@ -432,24 +436,30 @@ pub struct LogEntry {
 }
 
 #[tauri::command]
-pub async fn exec_container(
+pub async fn exec_container_stream(
     state: State<'_, DockerState>,
     id: String,
-    cmd: Vec<String>,
-) -> Result<String, String> {
+    command: String,
+    on_event: Channel<TerminalOutputEvent>,
+) -> Result<(), String> {
+    if command.trim().is_empty() {
+        return Err("Command is empty".to_string());
+    }
+
     if DockerState::connection_mode(&state).await == ConnectionMode::Wsl {
-        return wsl_docker::exec_container(&id, &cmd);
+        return wsl_docker::exec_container_stream(&id, &command, on_event).await;
     }
     if DockerState::connection_mode(&state).await == ConnectionMode::Remote {
         let profile = DockerState::selected_remote_profile(&state).await?;
-        return tokio::task::spawn_blocking(move || remote_docker::exec_container(&profile, &id, &cmd))
-            .await
-            .map_err(|e| e.to_string())?;
+        return tokio::task::spawn_blocking(move || {
+            remote_docker::exec_container_stream(&profile, &id, &command, on_event)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
     }
 
     let docker = DockerState::get_docker(state).await?;
-    let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
-    docker::exec_in_container(&docker, &id, cmd_refs).await
+    docker::exec_in_container_stream(&docker, &id, &command, on_event).await
 }
 
 #[tauri::command]
@@ -540,9 +550,10 @@ async fn list_remote_containers(
 ) -> Result<Vec<ContainerResponse>, String> {
     let profile = DockerState::selected_remote_profile(&state).await?;
     let list_profile = profile.clone();
-    let containers = tokio::task::spawn_blocking(move || remote_docker::list_containers(&list_profile, all))
-        .await
-        .map_err(|e| e.to_string())??;
+    let containers =
+        tokio::task::spawn_blocking(move || remote_docker::list_containers(&list_profile, all))
+            .await
+            .map_err(|e| e.to_string())??;
     let meta = state.container_meta.lock().await.clone();
 
     tokio::task::spawn_blocking(move || {

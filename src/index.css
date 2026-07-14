@@ -17,6 +17,7 @@
   --danger: #ef4444;
   --warning: #f59e0b;
   --success: #22c55e;
+  --resource-ring-track: rgba(255, 255, 255, 0.09);
 }
 
 :root.theme-light {
@@ -27,6 +28,7 @@
   --text-primary: #0f172a;
   --text-secondary: #475569;
   --text-muted: #64748b;
+  --resource-ring-track: #cbd5e1;
 }
 
 * {
@@ -51,6 +53,15 @@ body {
   width: 100vw;
   height: 100vh;
   display: flex;
+}
+
+@keyframes toast-countdown {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+.toast-countdown {
+  animation: toast-countdown 3000ms linear forwards;
 }
 
 ::-webkit-scrollbar {

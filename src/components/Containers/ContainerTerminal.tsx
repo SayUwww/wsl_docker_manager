@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store';
 import { ArrowLeft, Terminal as TerminalIcon } from 'lucide-react';
 
@@ -8,7 +8,7 @@ export default function ContainerTerminal() {
   const terminalContainerName = useAppStore((s) => s.terminalContainerName);
   const setTerminalContainer = useAppStore((s) => s.setTerminalContainer);
 
-  const [history, setHistory] = useState<{ cmd: string; output: string }[]>([]);
+  const [history, setHistory] = useState<TerminalHistoryEntry[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -19,25 +19,47 @@ export default function ContainerTerminal() {
   }, [history]);
 
   const executeCommand = async (cmd: string) => {
-    if (!cmd.trim() || !terminalContainerId) return;
+    const command = cmd.trim();
+    if (!command || !terminalContainerId || loading) return;
+    if (command === 'exit') {
+      setTerminalContainer(null, null);
+      return;
+    }
 
+    const entryId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setHistory((prev) => [...prev, { id: entryId, cmd: command, output: '', running: true }]);
     setLoading(true);
     try {
-      const parts = cmd.trim().split(/\s+/);
-      const output = await invoke<string>('exec_container', {
+      const onEvent = new Channel<TerminalOutputEvent>();
+      onEvent.onmessage = ({ data }) => {
+        setHistory((prev) => prev.map((entry) => (
+          entry.id === entryId ? { ...entry, output: entry.output + data } : entry
+        )));
+      };
+      await invoke<void>('exec_container_stream', {
         id: terminalContainerId,
-        cmd: parts,
+        command,
+        onEvent,
       });
-      setHistory((prev) => [...prev, { cmd: cmd.trim(), output: output || '(no output)' }]);
     } catch (e) {
-      setHistory((prev) => [...prev, { cmd: cmd.trim(), output: `Error: ${e}` }]);
+      setHistory((prev) => prev.map((entry) => (
+        entry.id === entryId
+          ? { ...entry, output: `${entry.output}${entry.output ? '\n' : ''}Error: ${e}` }
+          : entry
+      )));
     } finally {
+      setHistory((prev) => prev.map((entry) => (
+        entry.id === entryId
+          ? { ...entry, output: entry.output || '(no output)', running: false }
+          : entry
+      )));
       setLoading(false);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
     }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !loading) {
       executeCommand(input);
       setInput('');
     }
@@ -46,7 +68,12 @@ export default function ContainerTerminal() {
   // Default shell prompt
   useEffect(() => {
     if (terminalContainerId) {
-      setHistory([{ cmd: '', output: `Connected to container: ${terminalContainerName}\nType commands to execute inside the container.\nType 'exit' to close.\n` }]);
+      setHistory([{
+        id: 'welcome',
+        cmd: '',
+        output: `Connected to container: ${terminalContainerName}\nType commands to execute inside the container.\nType 'exit' to close.\n`,
+        running: false,
+      }]);
     }
   }, [terminalContainerId, terminalContainerName]);
 
@@ -75,8 +102,8 @@ export default function ContainerTerminal() {
         className="flex-1 w-full min-w-0 overflow-auto p-4 font-mono text-sm bg-zinc-950"
         onClick={() => inputRef.current?.focus()}
       >
-        {history.map((entry, i) => (
-          <div key={i} className="mb-2 w-full">
+        {history.map((entry) => (
+          <div key={entry.id} className="mb-2 w-full">
             {entry.cmd && (
               <div className="text-green-400">
                 <span className="text-purple-400">root@container</span>
@@ -87,9 +114,9 @@ export default function ContainerTerminal() {
               </div>
             )}
             <div className="w-full text-zinc-300 whitespace-pre-wrap break-words mt-0.5">{entry.output}</div>
+            {entry.running && <span className="inline-block h-4 w-1.5 animate-pulse bg-zinc-500 align-middle" />}
           </div>
         ))}
-        {loading && <div className="text-zinc-500">Executing...</div>}
       </div>
 
       <div className="flex w-full min-w-0 items-center gap-2 px-4 py-3 border-t border-zinc-800 bg-zinc-950 flex-shrink-0">
@@ -101,9 +128,22 @@ export default function ContainerTerminal() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
+          disabled={loading}
           autoFocus
         />
       </div>
     </div>
   );
+}
+
+interface TerminalHistoryEntry {
+  id: string;
+  cmd: string;
+  output: string;
+  running: boolean;
+}
+
+interface TerminalOutputEvent {
+  stream: 'stdout' | 'stderr';
+  data: string;
 }

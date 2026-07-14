@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../store';
 import { translate } from '../../i18n';
@@ -16,7 +16,14 @@ export default function VolumeList() {
   const [pruning, setPruning] = useState(false);
   const [removingNames, setRemovingNames] = useState<Set<string>>(new Set());
   const [batchRemoving, setBatchRemoving] = useState(false);
+  const emptyRefreshAttemptedRef = useRef(false);
   const t = (key: Parameters<typeof translate>[1]) => translate(language, key);
+
+  useEffect(() => {
+    if (emptyRefreshAttemptedRef.current || volumes.length > 0 || isVolumesLoading) return;
+    emptyRefreshAttemptedRef.current = true;
+    void refreshVolumes();
+  }, [isVolumesLoading, refreshVolumes, volumes.length]);
 
   const orphanVolumes = volumes.filter((v) => v.orphan);
   const usedVolumes = volumes.filter((v) => !v.orphan);
